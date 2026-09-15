@@ -203,7 +203,7 @@ export const NewCreditModal: React.FC<NewCreditModalProps> = ({
         </div>
 
         {/* Form Body */}
-        <form onSubmit={handleSubmit} className="p-4 space-y-4 overflow-y-auto flex-1">
+        <form onSubmit={handleSubmit} className="p-4 space-y-4 overflow-y-auto flex-1 min-h-0">
           {/* 1. Client Choice */}
           <div className="space-y-1.5">
             <div className="flex items-center justify-between">

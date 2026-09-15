@@ -8,8 +8,7 @@ function getEnvUrl(): string | undefined {
     process.env.SUPABASE_URL ||
     process.env.VITE_SUPABASE_URL ||
     process.env.NEXT_PUBLIC_SUPABASE_URL ||
-    process.env.SUPABASE_PROJECT_URL ||
-    'https://zcmkjgjhoypbwqsxewxg.supabase.co';
+    process.env.SUPABASE_PROJECT_URL;
   return raw ? raw.trim().replace(/^["']|["']$/g, '') : undefined;
 }
 
@@ -21,8 +20,7 @@ function getEnvKey(): string | undefined {
     process.env.SUPABASE_KEY ||
     process.env.SUPABASE_API_KEY ||
     process.env.VITE_SUPABASE_ANON_KEY ||
-    process.env.VITE_SUPABASE_KEY ||
-    'sb_publishable_oZRg3Jboyqi3K7r9fcv-eg_qvT0WPxd';
+    process.env.VITE_SUPABASE_KEY;
   return raw ? raw.trim().replace(/^["']|["']$/g, '') : undefined;
 }
 

@@ -483,12 +483,13 @@ export class CreditService {
   }
 
   /**
-   * Create a payment with strict business rules:
-   * 1. Check client belongs to user
-   * 2. Calculate current real balance
-   * 3. Verify payment does not exceed current balance
-   * 4. Reject if amount > balance with error PAYMENT_EXCEEDS_BALANCE
-   * 5. Record payment and return new balance
+   * Create a payment with strict business rules and concurrency protection:
+   * 1. Acquire write lock using BEGIN IMMEDIATE
+   * 2. Check client exists and is active inside transaction
+   * 3. Recalculate current real balance inside transaction
+   * 4. Verify payment does not exceed current balance
+   * 5. Reject and ROLLBACK if amount > balance with error PAYMENT_EXCEEDS_BALANCE
+   * 6. Record payment, update client and COMMIT
    */
   static createPayment(
     userId: string,
@@ -503,35 +504,74 @@ export class CreditService {
       throw err;
     }
 
-    const clientSummary = this.getClientSummary(userId, clientId);
-    if (!clientSummary || !clientSummary.isActive) {
-      const err = new Error('Client introuvable ou inactif.');
-      (err as any).code = 'CLIENT_NOT_FOUND';
-      throw err;
+    // Acquire write lock immediately to serialize concurrent payment operations
+    const maxRetries = 20;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        db.exec('BEGIN IMMEDIATE;');
+        break;
+      } catch (err: any) {
+        const isBusy =
+          err.errcode === 5 ||
+          (err.message && (err.message.includes('busy') || err.message.includes('locked')));
+        if (isBusy && attempt < maxRetries - 1) {
+          const sleepMs = 20 * (attempt + 1);
+          const shared = new Int32Array(new SharedArrayBuffer(4));
+          Atomics.wait(shared, 0, 0, sleepMs);
+          continue;
+        }
+        throw err;
+      }
     }
 
-    const currentBalance = clientSummary.balance;
-
-    // RULE 5: Solde ne peut pas devenir négatif
-    if (amount > currentBalance) {
-      const err = new Error(
-        `Le montant payé (${amount} FCFA) dépasse le solde restant (${currentBalance} FCFA). Le solde ne peut pas être négatif.`
-      );
-      (err as any).code = 'PAYMENT_EXCEEDS_BALANCE';
-      (err as any).details = {
-        currentBalance,
-        attemptedAmount: amount,
-        excess: amount - currentBalance,
-      };
-      throw err;
-    }
-
-    const paymentId = `payment-${crypto.randomUUID()}`;
-    const now = new Date().toISOString();
-    const todayDate = now.split('T')[0];
-
-    db.exec('BEGIN TRANSACTION;');
     try {
+      // 1. Check client belongs to user & is active inside transaction
+      const client = db.prepare(`
+        SELECT id, is_active FROM clients 
+        WHERE id = ? AND user_id = ?
+      `).get(clientId, userId) as any;
+
+      if (!client || !client.is_active) {
+        const err = new Error('Client introuvable ou inactif.');
+        (err as any).code = 'CLIENT_NOT_FOUND';
+        throw err;
+      }
+
+      // 2. Recalculate balance inside the immediate write transaction
+      const totalCreditsRow = db.prepare(`
+        SELECT COALESCE(SUM(amount), 0) as total 
+        FROM credits 
+        WHERE client_id = ? AND user_id = ?
+      `).get(clientId, userId) as any;
+
+      const totalPaymentsRow = db.prepare(`
+        SELECT COALESCE(SUM(amount), 0) as total 
+        FROM payments 
+        WHERE client_id = ? AND user_id = ?
+      `).get(clientId, userId) as any;
+
+      const totalCredits = totalCreditsRow ? totalCreditsRow.total : 0;
+      const totalPayments = totalPaymentsRow ? totalPaymentsRow.total : 0;
+      const currentBalance = totalCredits - totalPayments;
+
+      // 3. RULE 5: Solde ne peut pas devenir négatif
+      if (amount > currentBalance) {
+        const err = new Error(
+          `Le montant payé (${amount} FCFA) dépasse le solde restant (${currentBalance} FCFA). Le solde ne peut pas être négatif.`
+        );
+        (err as any).code = 'PAYMENT_EXCEEDS_BALANCE';
+        (err as any).details = {
+          currentBalance,
+          attemptedAmount: amount,
+          excess: amount - currentBalance,
+        };
+        throw err;
+      }
+
+      const paymentId = `payment-${crypto.randomUUID()}`;
+      const now = new Date().toISOString();
+      const todayDate = now.split('T')[0];
+
       db.prepare(`
         INSERT INTO payments (id, user_id, client_id, credit_id, amount, payment_date, notes, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -551,17 +591,21 @@ export class CreditService {
       `).run(now, clientId);
 
       db.exec('COMMIT;');
+
+      const updatedSummary = this.getClientSummary(userId, clientId)!;
+      return {
+        paymentId,
+        clientSummary: updatedSummary,
+        newBalance: updatedSummary.balance,
+      };
     } catch (err) {
-      db.exec('ROLLBACK;');
+      try {
+        db.exec('ROLLBACK;');
+      } catch (_) {
+        // Ignore rollback error if transaction already terminated
+      }
       throw err;
     }
-
-    const updatedSummary = this.getClientSummary(userId, clientId)!;
-    return {
-      paymentId,
-      clientSummary: updatedSummary,
-      newBalance: updatedSummary.balance,
-    };
   }
 
   /**

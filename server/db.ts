@@ -13,6 +13,7 @@ export const db = new DatabaseSync(DB_PATH);
 // Enable Foreign Keys & WAL mode for high performance
 db.exec('PRAGMA foreign_keys = ON;');
 db.exec('PRAGMA journal_mode = WAL;');
+db.exec('PRAGMA busy_timeout = 5000;');
 
 /**
  * Initialize all required relational database tables according to Étape 11 & 12

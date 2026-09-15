@@ -101,7 +101,7 @@ export const NewPaymentModal: React.FC<NewPaymentModalProps> = ({
         </div>
 
         {/* Form Body */}
-        <form onSubmit={handleSubmit} className="p-4 space-y-4 overflow-y-auto flex-1">
+        <form onSubmit={handleSubmit} className="p-4 space-y-4 overflow-y-auto flex-1 min-h-0">
           {/* 1. Client Choice */}
           <div className="space-y-1.5">
             <label className="text-xs font-bold text-slate-800 uppercase tracking-wide">

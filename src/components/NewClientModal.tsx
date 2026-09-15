@@ -50,7 +50,7 @@ export const NewClientModal: React.FC<NewClientModalProps> = ({ onClose, onSucce
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-4 space-y-3.5">
+        <form onSubmit={handleSubmit} className="p-4 space-y-3.5 overflow-y-auto min-h-0">
           <div>
             <label className="text-xs font-bold text-slate-800 uppercase tracking-wide">
               {t.client_first_name}

@@ -2,7 +2,7 @@ import React from 'react';
 import { useCredit } from '../context/CreditContext';
 import { useLanguage } from '../context/LanguageContext';
 import { StatusBadge } from './StatusBadge';
-import { formatFCFA, formatDateDisplay } from '../utils/formatters';
+import { formatFCFA, formatDateDisplay, formatTodayDate } from '../utils/formatters';
 import {
   AlertTriangle,
   ArrowUpRight,
@@ -14,7 +14,8 @@ import {
   ChevronRight,
   PlusCircle,
   BadgeDollarSign,
-  UserCheck
+  UserCheck,
+  Calendar
 } from 'lucide-react';
 import { ClientSummary } from '../types';
 
@@ -33,9 +34,16 @@ export const AccueilView: React.FC<AccueilViewProps> = ({
 }) => {
   const { cockpitStats, clientsToRemind } = useCredit();
   const { t, language, isRTL } = useLanguage();
+  const todayDate = formatTodayDate(language);
 
   return (
-    <div id="view-accueil" className="space-y-4 pb-24">
+    <div id="view-accueil" className="space-y-3.5 pb-24">
+      {/* Date du jour */}
+      <div className="flex items-center gap-1.5 px-1 text-xs font-semibold text-slate-500">
+        <Calendar className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+        <span>{todayDate}</span>
+      </div>
+
       {/* 4 Cockpit KPI Cards */}
       <div className="grid grid-cols-2 gap-2.5">
         {/* KPI 1: Total donné à crédit ce mois-ci */}

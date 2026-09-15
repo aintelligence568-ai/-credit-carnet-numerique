@@ -119,7 +119,7 @@ export const ReminderModal: React.FC<ReminderModalProps> = ({
         </div>
 
         {/* Body */}
-        <div className="p-4 space-y-4 overflow-y-auto flex-1">
+        <div className="p-4 space-y-4 overflow-y-auto flex-1 min-h-0">
           {/* Rule note: Cheikh always validates */}
           <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 flex items-start gap-2 text-xs text-amber-900">
             <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />

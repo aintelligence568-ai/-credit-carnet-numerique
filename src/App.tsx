@@ -54,17 +54,17 @@ function MainApp() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-900 sm:py-6 flex items-center justify-center font-sans antialiased selection:bg-emerald-500 selection:text-white">
-      {/* Mobile Shell / Android Phone Frame Container */}
+    <div className="min-h-screen bg-slate-100 font-sans antialiased selection:bg-emerald-500 selection:text-white">
+      {/* Mobile-first responsive app container */}
       <div
         dir={dir}
-        className="w-full sm:max-w-md min-h-screen sm:min-h-[844px] sm:max-h-[920px] bg-slate-100 sm:rounded-3xl shadow-2xl flex flex-col overflow-hidden relative border-0 sm:border-8 sm:border-slate-800"
+        className="w-full max-w-md mx-auto min-h-screen bg-slate-100 flex flex-col relative sm:shadow-lg sm:border-x sm:border-slate-200"
       >
         {/* Top Header */}
         <Header />
 
-        {/* Viewport Content */}
-        <main className="flex-1 p-3.5 overflow-y-auto overscroll-contain">
+        {/* Viewport Content with natural scrolling */}
+        <main className="flex-1 p-3.5">
           {activeTab === 'accueil' && (
             <AccueilView
               onSelectClient={(id) => setSelectedClientId(id)}

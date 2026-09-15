@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { useCredit } from '../context/CreditContext';
 import { useLanguage } from '../context/LanguageContext';
-import { formatFCFA, formatDateDisplay } from '../utils/formatters';
+import { formatFCFA, formatDateDisplay, formatCurrentMonth } from '../utils/formatters';
 import { StatusBadge } from './StatusBadge';
 import {
   AlertTriangle,
@@ -14,7 +14,8 @@ import {
   ArrowUpRight,
   ArrowDownLeft,
   CheckCircle2,
-  HelpCircle
+  HelpCircle,
+  Calendar
 } from 'lucide-react';
 import { ClientSummary } from '../types';
 
@@ -29,6 +30,7 @@ export const SuiviView: React.FC<SuiviViewProps> = ({
 }) => {
   const { clientSummaries, cockpitStats, credits, payments } = useCredit();
   const { t, language, isRTL } = useLanguage();
+  const currentMonth = formatCurrentMonth(language);
 
   // All clients with debt (> 0)
   const debtors = useMemo(() => {
@@ -74,8 +76,9 @@ export const SuiviView: React.FC<SuiviViewProps> = ({
             <span className="text-xs font-bold text-slate-800 uppercase tracking-wide">
               {t.suivi_month_situation}
             </span>
-            <span className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full font-medium">
-              {t.suivi_month_current}
+            <span className="inline-flex items-center gap-1 text-[10px] bg-emerald-50 border border-emerald-200 text-emerald-800 px-2 py-0.5 rounded-full font-semibold">
+              <Calendar className="w-3 h-3 text-emerald-600" />
+              {currentMonth}
             </span>
           </div>
 

@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode, useCallback } from 'react';
 import { Client, Credit, Payment, ClientSummary, ClientStatus, CockpitStats, CreditItem } from '../types';
 import { formatIsoDate } from '../data/initialData';
+import { useAuth } from './AuthContext';
 
 interface CreditContextType {
   clients: Client[];
@@ -10,11 +11,19 @@ interface CreditContextType {
   cockpitStats: CockpitStats;
   clientsToRemind: ClientSummary[];
   isLoading: boolean;
+  isLoadingClientHistory: boolean;
   addCredit: (clientId: string, amount: number, dueDate: string, description?: string, items?: CreditItem[], forceOverride?: boolean) => Promise<boolean>;
-  addPayment: (clientId: string, amount: number, notes?: string) => Promise<boolean>;
+  addPayment: (clientId: string, amount: number, notes?: string, idempotencyKey?: string) => Promise<boolean>;
   toggleBlockClient: (clientId: string) => Promise<void>;
   createClient: (firstName: string, lastName: string, phone: string) => Promise<Client | null>;
+  updateClient: (clientId: string, data: { firstName: string; lastName: string; phone: string }) => Promise<boolean>;
+  deleteClient: (clientId: string) => Promise<boolean>;
+  updateCredit: (creditId: string, data: { amount?: number; dueDate?: string; description?: string }) => Promise<boolean>;
+  deleteCredit: (creditId: string) => Promise<boolean>;
+  updatePayment: (paymentId: string, data: { amount?: number; notes?: string; paymentDate?: string }) => Promise<boolean>;
+  deletePayment: (paymentId: string) => Promise<boolean>;
   getClientSummary: (clientId: string) => ClientSummary | undefined;
+  loadClientHistory: (clientId: string) => Promise<void>;
   getClientCredits: (clientId: string) => Credit[];
   getClientPayments: (clientId: string) => Payment[];
   resetToInitialData: () => Promise<void>;
@@ -24,9 +33,10 @@ interface CreditContextType {
 const CreditContext = createContext<CreditContextType | null>(null);
 
 export const CreditProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+  const { authFetch, isAuthenticated, user } = useAuth();
   const [clientSummaries, setClientSummaries] = useState<ClientSummary[]>([]);
-  const [credits, setCredits] = useState<Credit[]>([]);
-  const [payments, setPayments] = useState<Payment[]>([]);
+  const [clientHistoryCache, setClientHistoryCache] = useState<Record<string, { credits: Credit[]; payments: Payment[] }>>({});
+  const [isLoadingClientHistory, setIsLoadingClientHistory] = useState<boolean>(false);
   const [cockpitStats, setCockpitStats] = useState<CockpitStats>({
     totalCreditedThisMonth: 0,
     totalRecoveredThisMonth: 0,
@@ -36,11 +46,25 @@ export const CreditProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   });
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
-  // Fetch full state from backend API
+  // Fetch full state from backend API (Only 2 requests total at boot: /api/clients and /api/cockpit/stats)
   const refreshData = useCallback(async () => {
+    if (!isAuthenticated) {
+      setClientSummaries([]);
+      setClientHistoryCache({});
+      setCockpitStats({
+        totalCreditedThisMonth: 0,
+        totalRecoveredThisMonth: 0,
+        totalRemainingToRecover: 0,
+        overdueClientsCount: 0,
+        dueSoonClientsCount: 0,
+      });
+      setIsLoading(false);
+      return;
+    }
+
     try {
-      // 1. Fetch clients summaries
-      const clientsRes = await fetch('/api/clients');
+      // 1. Fetch clients summaries (Single query with calculated balance, counts, and status)
+      const clientsRes = await authFetch('/api/clients');
       if (!clientsRes.ok) throw new Error('Erreur chargement clients');
       const clientsData = await clientsRes.json();
 
@@ -73,74 +97,15 @@ export const CreditProvider: React.FC<{ children: ReactNode }> = ({ children }) 
           daysOverdue: c.daysOverdue,
           daysUntilDue: c.daysUntilDue,
           earliestDueDate: c.earliestDueDate,
-          creditsCount: 0,
-          paymentsCount: 0,
+          creditsCount: c.creditsCount ?? 0,
+          paymentsCount: c.paymentsCount ?? 0,
         };
       });
 
       setClientSummaries(mappedSummaries);
 
-      // 2. Fetch credits & payments for all clients
-      const allCredits: Credit[] = [];
-      const allPayments: Payment[] = [];
-
-      await Promise.all(
-        clientsData.map(async (c: any) => {
-          try {
-            const [crRes, pyRes] = await Promise.all([
-              fetch(`/api/clients/${c.id}/credits`),
-              fetch(`/api/clients/${c.id}/payments`),
-            ]);
-
-            if (crRes.ok) {
-              const crList = await crRes.json();
-              crList.forEach((cr: any) => {
-                allCredits.push({
-                  id: cr.id,
-                  clientId: cr.clientId,
-                  amount: cr.amount,
-                  date: cr.creditDate,
-                  dueDate: cr.dueDate,
-                  description: cr.description,
-                  items: cr.items,
-                  createdAt: new Date(cr.createdAt).getTime(),
-                });
-              });
-            }
-
-            if (pyRes.ok) {
-              const pyList = await pyRes.json();
-              pyList.forEach((py: any) => {
-                allPayments.push({
-                  id: py.id,
-                  clientId: py.clientId,
-                  amount: py.amount,
-                  date: py.paymentDate,
-                  notes: py.notes,
-                  createdAt: new Date(py.createdAt).getTime(),
-                });
-              });
-            }
-          } catch (e) {
-            console.error(`Error loading history for ${c.id}:`, e);
-          }
-        })
-      );
-
-      setCredits(allCredits);
-      setPayments(allPayments);
-
-      // Update credit/payment counts in summaries
-      setClientSummaries((prev) =>
-        prev.map((s) => ({
-          ...s,
-          creditsCount: allCredits.filter((cr) => cr.clientId === s.id).length,
-          paymentsCount: allPayments.filter((py) => py.clientId === s.id).length,
-        }))
-      );
-
-      // 3. Fetch Cockpit Stats
-      const statsRes = await fetch('/api/cockpit/stats');
+      // 2. Fetch Cockpit Stats (Single query)
+      const statsRes = await authFetch('/api/cockpit/stats');
       if (statsRes.ok) {
         const statsData = await statsRes.json();
         setCockpitStats({
@@ -156,12 +121,73 @@ export const CreditProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [authFetch, isAuthenticated]);
 
-  // Initial load
+  // Initial load & reset on user change to strictly isolate data between accounts
   useEffect(() => {
-    refreshData();
-  }, [refreshData]);
+    setClientSummaries([]);
+    setClientHistoryCache({});
+    setCockpitStats({
+      totalCreditedThisMonth: 0,
+      totalRecoveredThisMonth: 0,
+      totalRemainingToRecover: 0,
+      overdueClientsCount: 0,
+      dueSoonClientsCount: 0,
+    });
+    if (isAuthenticated && user?.id) {
+      setIsLoading(true);
+      refreshData();
+    } else {
+      setIsLoading(false);
+    }
+  }, [user?.id, isAuthenticated, refreshData]);
+
+  // Load client detailed history (credits + payments) on-demand when opening client modal
+  const loadClientHistory = useCallback(async (clientId: string) => {
+    if (!clientId) return;
+    try {
+      setIsLoadingClientHistory(true);
+      const [crRes, pyRes] = await Promise.all([
+        authFetch(`/api/clients/${clientId}/credits`),
+        authFetch(`/api/clients/${clientId}/payments`),
+      ]);
+
+      const crList = crRes.ok ? await crRes.json() : [];
+      const pyList = pyRes.ok ? await pyRes.json() : [];
+
+      const mappedCredits: Credit[] = crList.map((cr: any) => ({
+        id: cr.id,
+        clientId: cr.clientId,
+        amount: cr.amount,
+        date: cr.creditDate,
+        dueDate: cr.dueDate,
+        description: cr.description,
+        items: cr.items,
+        createdAt: new Date(cr.createdAt).getTime(),
+      }));
+
+      const mappedPayments: Payment[] = pyList.map((py: any) => ({
+        id: py.id,
+        clientId: py.clientId,
+        amount: py.amount,
+        date: py.paymentDate,
+        notes: py.notes,
+        createdAt: new Date(py.createdAt).getTime(),
+      }));
+
+      setClientHistoryCache((prev) => ({
+        ...prev,
+        [clientId]: {
+          credits: mappedCredits,
+          payments: mappedPayments,
+        },
+      }));
+    } catch (err) {
+      console.error(`Erreur chargement historique client ${clientId}:`, err);
+    } finally {
+      setIsLoadingClientHistory(false);
+    }
+  }, [authFetch]);
 
   // Plain clients list
   const clients = useMemo<Client[]>(() => {
@@ -174,6 +200,15 @@ export const CreditProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       createdAt: s.createdAt,
     }));
   }, [clientSummaries]);
+
+  // Derived credits and payments for backwards compatibility
+  const credits = useMemo<Credit[]>(() => {
+    return Object.keys(clientHistoryCache).flatMap((k) => clientHistoryCache[k]?.credits || []);
+  }, [clientHistoryCache]);
+
+  const payments = useMemo<Payment[]>(() => {
+    return Object.keys(clientHistoryCache).flatMap((k) => clientHistoryCache[k]?.payments || []);
+  }, [clientHistoryCache]);
 
   // Clients to remind: priority to overdue, then due soon
   const clientsToRemind = useMemo<ClientSummary[]>(() => {
@@ -211,7 +246,7 @@ export const CreditProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
     const entryMode = items && items.length > 0 ? 'DETAILED' : 'EXPRESS';
     try {
-      const res = await fetch('/api/credits', {
+      const res = await authFetch('/api/credits', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -241,6 +276,9 @@ export const CreditProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       }
 
       await refreshData();
+      if (clientId) {
+        await loadClientHistory(clientId);
+      }
       return true;
     } catch (err: any) {
       alert(`Erreur de connexion au serveur : ${err.message}`);
@@ -248,23 +286,42 @@ export const CreditProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     }
   };
 
-  const addPayment = async (clientId: string, amount: number, notes?: string): Promise<boolean> => {
+  const addPayment = async (
+    clientId: string,
+    amount: number,
+    notes?: string,
+    idempotencyKey?: string
+  ): Promise<boolean> => {
     if (amount <= 0) return false;
 
+    const key =
+      idempotencyKey ||
+      (typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `pay-${Date.now()}-${Math.random()}`);
+
     try {
-      const res = await fetch('/api/payments', {
+      const res = await authFetch('/api/payments', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': key,
+        },
         body: JSON.stringify({
           clientId,
           amount,
           notes,
+          idempotencyKey: key,
         }),
       });
 
       const data = await res.json();
       if (!res.ok) {
-        if (data.code === 'PAYMENT_EXCEEDS_BALANCE') {
+        if (data.code === 'IDEMPOTENCY_CONFLICT') {
+          alert(
+            `Erreur : Conflit d'idempotence. Un paiement avec cette même clé existe déjà avec des paramètres différents.`
+          );
+        } else if (data.code === 'PAYMENT_EXCEEDS_BALANCE') {
           alert(
             `Erreur : Le montant payé (${amount} FCFA) dépasse le solde restant dû (${data.details?.currentBalance || 0} FCFA).\nLe solde ne peut jamais devenir négatif.`
           );
@@ -275,6 +332,9 @@ export const CreditProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       }
 
       await refreshData();
+      if (clientId) {
+        await loadClientHistory(clientId);
+      }
       return true;
     } catch (err: any) {
       alert(`Erreur de connexion au serveur : ${err.message}`);
@@ -288,7 +348,7 @@ export const CreditProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
     const newStatus = client.isBlocked ? 'AUTHORIZED' : 'BLOCKED';
     try {
-      const res = await fetch(`/api/clients/${clientId}/credit-status`, {
+      const res = await authFetch(`/api/clients/${clientId}/credit-status`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ creditStatus: newStatus }),
@@ -312,7 +372,7 @@ export const CreditProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     phone: string
   ): Promise<Client | null> => {
     try {
-      const res = await fetch('/api/clients', {
+      const res = await authFetch('/api/clients', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ firstName, lastName, phone }),
@@ -339,25 +399,164 @@ export const CreditProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     }
   };
 
+  const updateClient = async (
+    clientId: string,
+    data: { firstName: string; lastName: string; phone: string }
+  ): Promise<boolean> => {
+    try {
+      const res = await authFetch(`/api/clients/${clientId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+
+      const resData = await res.json();
+      if (!res.ok) {
+        alert(`Erreur : ${resData.error || 'Impossible de mettre à jour le client.'}`);
+        return false;
+      }
+
+      await refreshData();
+      return true;
+    } catch (err: any) {
+      alert(`Erreur de connexion au serveur : ${err.message}`);
+      return false;
+    }
+  };
+
+  const deleteClient = async (clientId: string): Promise<boolean> => {
+    try {
+      const res = await authFetch(`/api/clients/${clientId}`, {
+        method: 'DELETE',
+      });
+
+      const resData = await res.json();
+      if (!res.ok) {
+        alert(`Erreur : ${resData.error || 'Impossible de supprimer ce client.'}`);
+        return false;
+      }
+
+      await refreshData();
+      return true;
+    } catch (err: any) {
+      alert(`Erreur de connexion au serveur : ${err.message}`);
+      return false;
+    }
+  };
+
+  const updateCredit = async (
+    creditId: string,
+    data: { amount?: number; dueDate?: string; description?: string }
+  ): Promise<boolean> => {
+    try {
+      const res = await authFetch(`/api/credits/${creditId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+
+      const resData = await res.json();
+      if (!res.ok) {
+        alert(`Erreur : ${resData.error || 'Impossible de modifier ce crédit.'}`);
+        return false;
+      }
+
+      await refreshData();
+      return true;
+    } catch (err: any) {
+      alert(`Erreur de connexion au serveur : ${err.message}`);
+      return false;
+    }
+  };
+
+  const deleteCredit = async (creditId: string): Promise<boolean> => {
+    try {
+      const res = await authFetch(`/api/credits/${creditId}`, {
+        method: 'DELETE',
+      });
+
+      const resData = await res.json();
+      if (!res.ok) {
+        alert(`Erreur : ${resData.error || 'Impossible de supprimer ce crédit.'}`);
+        return false;
+      }
+
+      await refreshData();
+      return true;
+    } catch (err: any) {
+      alert(`Erreur de connexion au serveur : ${err.message}`);
+      return false;
+    }
+  };
+
+  const updatePayment = async (
+    paymentId: string,
+    data: { amount?: number; notes?: string; paymentDate?: string }
+  ): Promise<boolean> => {
+    try {
+      const res = await authFetch(`/api/payments/${paymentId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+
+      const resData = await res.json();
+      if (!res.ok) {
+        alert(`Erreur : ${resData.error || 'Impossible de modifier ce paiement.'}`);
+        return false;
+      }
+
+      await refreshData();
+      return true;
+    } catch (err: any) {
+      alert(`Erreur de connexion au serveur : ${err.message}`);
+      return false;
+    }
+  };
+
+  const deletePayment = async (paymentId: string): Promise<boolean> => {
+    try {
+      const res = await authFetch(`/api/payments/${paymentId}`, {
+        method: 'DELETE',
+      });
+
+      const resData = await res.json();
+      if (!res.ok) {
+        alert(`Erreur : ${resData.error || 'Impossible de supprimer ce paiement.'}`);
+        return false;
+      }
+
+      await refreshData();
+      return true;
+    } catch (err: any) {
+      alert(`Erreur de connexion au serveur : ${err.message}`);
+      return false;
+    }
+  };
+
   const getClientSummary = (clientId: string) => {
     return clientSummaries.find((c) => c.id === clientId);
   };
 
   const getClientCredits = (clientId: string) => {
-    return credits
-      .filter((c) => c.clientId === clientId)
-      .sort((a, b) => b.createdAt - a.createdAt);
+    const cached = clientHistoryCache[clientId]?.credits;
+    if (cached) {
+      return cached.slice().sort((a, b) => b.createdAt - a.createdAt);
+    }
+    return [];
   };
 
   const getClientPayments = (clientId: string) => {
-    return payments
-      .filter((p) => p.clientId === clientId)
-      .sort((a, b) => b.createdAt - a.createdAt);
+    const cached = clientHistoryCache[clientId]?.payments;
+    if (cached) {
+      return cached.slice().sort((a, b) => b.createdAt - a.createdAt);
+    }
+    return [];
   };
 
   const resetToInitialData = async () => {
     try {
-      const res = await fetch('/api/test/reset', { method: 'POST' });
+      const res = await authFetch('/api/test/reset', { method: 'POST' });
       if (res.ok) {
         await refreshData();
       }
@@ -376,11 +575,19 @@ export const CreditProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         cockpitStats,
         clientsToRemind,
         isLoading,
+        isLoadingClientHistory,
         addCredit,
         addPayment,
         toggleBlockClient,
         createClient,
+        updateClient,
+        deleteClient,
+        updateCredit,
+        deleteCredit,
+        updatePayment,
+        deletePayment,
         getClientSummary,
+        loadClientHistory,
         getClientCredits,
         getClientPayments,
         resetToInitialData,

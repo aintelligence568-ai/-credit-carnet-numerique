@@ -59,7 +59,7 @@ export const ReminderModal: React.FC<ReminderModalProps> = ({
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
       <div
         id="modal-reminder"
-        className="w-full max-w-md bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl max-h-[92vh] flex flex-col overflow-hidden animate-in slide-in-from-bottom duration-200"
+        className="w-full max-w-md sm:max-w-lg bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl max-h-[92dvh] sm:max-h-[88vh] flex flex-col overflow-hidden animate-in slide-in-from-bottom duration-200"
       >
         {/* Header */}
         <div className="bg-emerald-800 text-white p-4 shrink-0 flex items-center justify-between">
@@ -119,7 +119,7 @@ export const ReminderModal: React.FC<ReminderModalProps> = ({
         </div>
 
         {/* Body */}
-        <div className="p-4 space-y-4 overflow-y-auto flex-1 min-h-0">
+        <div className="p-4 space-y-4 overflow-y-auto min-h-0 flex-1 overscroll-y-contain custom-scrollbar">
           {/* Rule note: Cheikh always validates */}
           <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 flex items-start gap-2 text-xs text-amber-900">
             <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />

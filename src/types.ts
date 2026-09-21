@@ -58,3 +58,11 @@ export interface CockpitStats {
   overdueClientsCount: number;
   dueSoonClientsCount: number;
 }
+
+export interface AuthUser {
+  id: string;
+  phone: string;
+  fullName: string;
+  shopName?: string;
+}
+

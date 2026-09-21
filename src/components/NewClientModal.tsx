@@ -33,7 +33,7 @@ export const NewClientModal: React.FC<NewClientModalProps> = ({ onClose, onSucce
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
       <div
         id="modal-new-client"
-        className="w-full max-w-md bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl max-h-[90vh] flex flex-col overflow-hidden animate-in slide-in-from-bottom duration-200"
+        className="w-full max-w-md sm:max-w-lg bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl max-h-[92dvh] sm:max-h-[88vh] flex flex-col overflow-hidden animate-in slide-in-from-bottom duration-200"
       >
         <div className="bg-emerald-800 text-white p-4 shrink-0 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -50,7 +50,7 @@ export const NewClientModal: React.FC<NewClientModalProps> = ({ onClose, onSucce
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-4 space-y-3.5 overflow-y-auto min-h-0">
+        <form onSubmit={handleSubmit} className="p-4 space-y-3.5 overflow-y-auto min-h-0 flex-1 overscroll-y-contain custom-scrollbar">
           <div>
             <label className="text-xs font-bold text-slate-800 uppercase tracking-wide">
               {t.client_first_name}

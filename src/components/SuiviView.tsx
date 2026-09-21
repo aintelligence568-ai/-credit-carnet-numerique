@@ -28,7 +28,7 @@ export const SuiviView: React.FC<SuiviViewProps> = ({
   onSelectClient,
   onOpenReminder,
 }) => {
-  const { clientSummaries, cockpitStats, credits, payments } = useCredit();
+  const { clientSummaries, cockpitStats } = useCredit();
   const { t, language, isRTL } = useLanguage();
   const currentMonth = formatCurrentMonth(language);
 
@@ -49,12 +49,18 @@ export const SuiviView: React.FC<SuiviViewProps> = ({
     return debtors.filter((c) => c.status === 'DUE_SOON');
   }, [debtors]);
 
-  // Total global credit & payments
-  const globalTotalCredits = useMemo(() => credits.reduce((s, c) => s + c.amount, 0), [credits]);
-  const globalTotalPayments = useMemo(() => payments.reduce((s, p) => s + p.amount, 0), [payments]);
+  // Total global credit & payments calculated from client summaries
+  const globalTotalCredits = useMemo(
+    () => clientSummaries.reduce((s, c) => s + (c.totalCredits || 0), 0),
+    [clientSummaries]
+  );
+  const globalTotalPayments = useMemo(
+    () => clientSummaries.reduce((s, c) => s + (c.totalPayments || 0), 0),
+    [clientSummaries]
+  );
 
   return (
-    <div id="view-suivi" className="space-y-4 pb-24">
+    <div id="view-suivi" className="space-y-4 pb-6">
       {/* Question / Guide banner for Cheikh */}
       <div className="bg-emerald-900 text-white rounded-xl p-3.5 shadow-xs border border-emerald-800">
         <div className="flex items-center gap-2 mb-1">

@@ -20,8 +20,8 @@ export const Navigation: React.FC<NavigationProps> = ({
   const { t, isRTL } = useLanguage();
 
   return (
-    <div className="fixed bottom-0 left-0 right-0 z-40 bg-white border-t border-slate-200 shadow-lg pb-safe">
-      <div className="max-w-md mx-auto px-4 h-16 flex items-center justify-between relative">
+    <div className="shrink-0 bg-white border-t border-slate-200 shadow-md pb-safe z-20">
+      <div className="w-full max-w-xl mx-auto px-4 h-16 flex items-center justify-between relative">
         {/* Tab 1: Accueil */}
         <button
           id="nav-tab-accueil"

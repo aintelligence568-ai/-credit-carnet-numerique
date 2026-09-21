@@ -2,7 +2,7 @@ import React from 'react';
 import { useCredit } from '../context/CreditContext';
 import { useLanguage } from '../context/LanguageContext';
 import { StatusBadge } from './StatusBadge';
-import { formatFCFA, formatDateDisplay, formatTodayDate } from '../utils/formatters';
+import { formatFCFA, formatDateDisplay } from '../utils/formatters';
 import {
   AlertTriangle,
   ArrowUpRight,
@@ -14,8 +14,7 @@ import {
   ChevronRight,
   PlusCircle,
   BadgeDollarSign,
-  UserCheck,
-  Calendar
+  UserCheck
 } from 'lucide-react';
 import { ClientSummary } from '../types';
 
@@ -34,18 +33,11 @@ export const AccueilView: React.FC<AccueilViewProps> = ({
 }) => {
   const { cockpitStats, clientsToRemind } = useCredit();
   const { t, language, isRTL } = useLanguage();
-  const todayDate = formatTodayDate(language);
 
   return (
-    <div id="view-accueil" className="space-y-3.5 pb-24">
-      {/* Date du jour */}
-      <div className="flex items-center gap-1.5 px-1 text-xs font-semibold text-slate-500">
-        <Calendar className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-        <span>{todayDate}</span>
-      </div>
-
+    <div id="view-accueil" className="space-y-4 pb-6">
       {/* 4 Cockpit KPI Cards */}
-      <div className="grid grid-cols-2 gap-2.5">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3.5">
         {/* KPI 1: Total donné à crédit ce mois-ci */}
         <div
           id="kpi-credited-month"
@@ -87,7 +79,7 @@ export const AccueilView: React.FC<AccueilViewProps> = ({
         {/* KPI 3: Total restant à récupérer */}
         <div
           id="kpi-total-remaining"
-          className="bg-emerald-900 text-white rounded-xl p-3 border border-emerald-800 shadow-xs flex flex-col justify-between col-span-1"
+          className="bg-emerald-900 text-white rounded-xl p-3 border border-emerald-800 shadow-xs flex flex-col justify-between"
         >
           <div className="flex items-center justify-between text-emerald-200 mb-1">
             <span className="text-[11px] font-medium leading-tight">{t.kpi_remaining_total}</span>
@@ -106,7 +98,7 @@ export const AccueilView: React.FC<AccueilViewProps> = ({
         {/* KPI 4: Nombre de clients en retard */}
         <div
           id="kpi-overdue-count"
-          className={`rounded-xl p-3 border shadow-xs flex flex-col justify-between col-span-1 ${
+          className={`rounded-xl p-3 border shadow-xs flex flex-col justify-between ${
             cockpitStats.overdueClientsCount > 0
               ? 'bg-red-50 border-red-200 text-red-950'
               : 'bg-white border-slate-200 text-slate-900'

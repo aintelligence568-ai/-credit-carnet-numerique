@@ -1,6 +1,6 @@
 {
   "name": "Carnet de Crédit Numérique",
-  "description": "Prototype PWA mobile-first pour la gestion rapide des crédits clients au comptoir par Cheikh.",
+  "description": "Application PWA mobile-first pour la gestion sécurisée et cloisonnée des crédits et paiements clients par commerçant.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

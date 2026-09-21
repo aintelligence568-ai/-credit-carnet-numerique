@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import fs from 'node:fs';
+import { hashPin } from './auth';
 
 const DB_DIR = path.join(process.cwd(), 'data');
 if (!fs.existsSync(DB_DIR)) {
@@ -10,7 +11,7 @@ if (!fs.existsSync(DB_DIR)) {
 const DB_PATH = path.join(DB_DIR, 'credit_cheikh.sqlite');
 export const db = new DatabaseSync(DB_PATH);
 
-// Enable Foreign Keys & WAL mode for high performance
+// Enable Foreign Keys, WAL mode & busy_timeout for high performance and concurrency resilience
 db.exec('PRAGMA foreign_keys = ON;');
 db.exec('PRAGMA journal_mode = WAL;');
 db.exec('PRAGMA busy_timeout = 5000;');
@@ -19,12 +20,17 @@ db.exec('PRAGMA busy_timeout = 5000;');
  * Initialize all required relational database tables according to Étape 11 & 12
  */
 export function initializeDatabase() {
+  db.exec('PRAGMA foreign_keys = ON;');
+  db.exec('PRAGMA journal_mode = WAL;');
+  db.exec('PRAGMA busy_timeout = 5000;');
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
       phone TEXT UNIQUE NOT NULL,
       full_name TEXT NOT NULL,
       shop_name TEXT,
+      pin TEXT NOT NULL DEFAULT '1234',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -77,10 +83,12 @@ export function initializeDatabase() {
       amount INTEGER NOT NULL CHECK (amount > 0),
       payment_date TEXT NOT NULL,
       notes TEXT,
+      idempotency_key TEXT,
       created_at TEXT NOT NULL,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
       FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE RESTRICT,
-      FOREIGN KEY (credit_id) REFERENCES credits(id) ON DELETE SET NULL
+      FOREIGN KEY (credit_id) REFERENCES credits(id) ON DELETE SET NULL,
+      UNIQUE (user_id, idempotency_key)
     );
 
     CREATE INDEX IF NOT EXISTS idx_clients_user_phone ON clients(user_id, phone);
@@ -89,6 +97,38 @@ export function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_credits_user_due ON credits(user_id, due_date ASC);
     CREATE INDEX IF NOT EXISTS idx_payments_client ON payments(client_id, payment_date DESC);
   `);
+
+  // Migrate users table if pin column does not exist
+  try {
+    const tableInfo = db.prepare(`PRAGMA table_info(users)`).all() as Array<{ name: string }>;
+    const hasPin = tableInfo.some((col) => col.name === 'pin');
+    if (!hasPin) {
+      db.exec(`ALTER TABLE users ADD COLUMN pin TEXT;`);
+    }
+
+    // Hash any existing plaintext PINs in users table
+    const users = db.prepare(`SELECT id, pin FROM users`).all() as Array<{ id: string; pin: string }>;
+    for (const u of users) {
+      if (u.pin && !u.pin.startsWith('scrypt$')) {
+        const hashed = hashPin(u.pin);
+        db.prepare(`UPDATE users SET pin = ? WHERE id = ?`).run(hashed, u.id);
+      }
+    }
+  } catch (err) {
+    console.warn('[DB] Migration pin column warning:', err);
+  }
+
+  // Migrate payments table for idempotency_key
+  try {
+    const paymentCols = db.prepare(`PRAGMA table_info(payments)`).all() as Array<{ name: string }>;
+    const hasIdemp = paymentCols.some((col) => col.name === 'idempotency_key');
+    if (!hasIdemp) {
+      db.exec(`ALTER TABLE payments ADD COLUMN idempotency_key TEXT;`);
+    }
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_payments_user_idempotency ON payments(user_id, idempotency_key) WHERE idempotency_key IS NOT NULL;`);
+  } catch (err) {
+    console.warn('[DB] Migration payments idempotency warning:', err);
+  }
 }
 
 /**
@@ -122,19 +162,26 @@ export function seedCheikhInitialData(forceReset: boolean = false, cleanAll: boo
   const now = new Date().toISOString();
 
   // Check if default user exists
-  const existingUser = db.prepare('SELECT id FROM users WHERE id = ?').get(DEFAULT_USER_ID);
+  const existingUser = db.prepare('SELECT id, pin FROM users WHERE id = ?').get(DEFAULT_USER_ID) as any;
+  const defaultHashedPin = hashPin('1234');
   if (!existingUser) {
     db.prepare(`
-      INSERT INTO users (id, phone, full_name, shop_name, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO users (id, phone, full_name, shop_name, pin, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run(
       DEFAULT_USER_ID,
       '770000000',
       'Cheikh',
       'Alimentation Générale de Cheikh',
+      defaultHashedPin,
       now,
       now
     );
+  } else {
+    // Ensure default user has PIN set to hashed 1234 if missing or plain
+    if (!existingUser.pin || !existingUser.pin.startsWith('scrypt$')) {
+      db.prepare(`UPDATE users SET pin = ? WHERE id = ?`).run(defaultHashedPin, DEFAULT_USER_ID);
+    }
   }
 
   // If cleanAll is requested, purge all test data across users

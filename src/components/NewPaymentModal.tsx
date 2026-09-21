@@ -26,6 +26,12 @@ export const NewPaymentModal: React.FC<NewPaymentModalProps> = ({
   const [notes, setNotes] = useState<string>(
     language === 'ar' ? 'سداد عند الشباك' : 'Règlement au comptoir'
   );
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const [idempotencyKey] = useState<string>(() =>
+    typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `pay-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`
+  );
 
   const currentClient = useMemo(() => {
     return clientSummaries.find((c) => c.id === selectedClientId);
@@ -48,6 +54,7 @@ export const NewPaymentModal: React.FC<NewPaymentModalProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
 
     if (!selectedClientId) {
       alert(language === 'ar' ? 'يرجى اختيار زبون.' : 'Veuillez choisir un client.');
@@ -68,9 +75,14 @@ export const NewPaymentModal: React.FC<NewPaymentModalProps> = ({
       return;
     }
 
-    const success = await addPayment(selectedClientId, numAmount, notes);
-    if (success) {
-      onSuccess(selectedClientId);
+    setIsSubmitting(true);
+    try {
+      const success = await addPayment(selectedClientId, numAmount, notes, idempotencyKey);
+      if (success) {
+        onSuccess(selectedClientId);
+      }
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -78,7 +90,7 @@ export const NewPaymentModal: React.FC<NewPaymentModalProps> = ({
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
       <div
         id="modal-new-payment"
-        className="w-full max-w-md bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl max-h-[92vh] flex flex-col overflow-hidden animate-in slide-in-from-bottom duration-200"
+        className="w-full max-w-md sm:max-w-lg bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl max-h-[92dvh] sm:max-h-[88vh] flex flex-col overflow-hidden animate-in slide-in-from-bottom duration-200"
       >
         {/* Header */}
         <div className="bg-slate-900 text-white p-4 shrink-0 flex items-center justify-between">
@@ -101,7 +113,7 @@ export const NewPaymentModal: React.FC<NewPaymentModalProps> = ({
         </div>
 
         {/* Form Body */}
-        <form onSubmit={handleSubmit} className="p-4 space-y-4 overflow-y-auto flex-1 min-h-0">
+        <form onSubmit={handleSubmit} className="p-4 space-y-4 overflow-y-auto min-h-0 flex-1 overscroll-y-contain custom-scrollbar">
           {/* 1. Client Choice */}
           <div className="space-y-1.5">
             <label className="text-xs font-bold text-slate-800 uppercase tracking-wide">
@@ -238,12 +250,23 @@ export const NewPaymentModal: React.FC<NewPaymentModalProps> = ({
             <button
               id="btn-submit-payment"
               type="submit"
-              className="w-full py-3.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 active:scale-[0.99] text-white font-bold text-sm shadow-md transition flex items-center justify-center gap-2"
+              disabled={isSubmitting || numAmount <= 0}
+              className={`w-full py-3.5 px-4 rounded-xl font-bold text-sm shadow-md transition flex items-center justify-center gap-2 ${
+                isSubmitting || numAmount <= 0
+                  ? 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                  : 'bg-slate-900 hover:bg-slate-800 active:scale-[0.99] text-white'
+              }`}
             >
               <Check className="w-5 h-5 text-emerald-400" />
               <span>
-                {language === 'ar' ? 'تأكيد السداد ' : 'Confirmer le paiement '}
-                {numAmount > 0 ? `(${formatFCFA(numAmount)})` : ''}
+                {isSubmitting
+                  ? language === 'ar'
+                    ? 'جار المعالجة...'
+                    : 'Traitement en cours...'
+                  : language === 'ar'
+                  ? 'تأكيد السداد '
+                  : 'Confirmer le paiement '}
+                {!isSubmitting && numAmount > 0 ? `(${formatFCFA(numAmount)})` : ''}
               </span>
             </button>
           </div>

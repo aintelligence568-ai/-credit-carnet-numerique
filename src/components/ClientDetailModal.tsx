@@ -1,8 +1,11 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useCredit } from '../context/CreditContext';
 import { useLanguage } from '../context/LanguageContext';
 import { StatusBadge } from './StatusBadge';
 import { formatFCFA, formatDateDisplay } from '../utils/formatters';
+import { EditClientModal } from './EditClientModal';
+import { EditCreditModal } from './EditCreditModal';
+import { EditPaymentModal } from './EditPaymentModal';
 import {
   X,
   Phone,
@@ -17,12 +20,9 @@ import {
   Receipt,
   ChevronDown,
   ChevronUp,
-  Filter,
-  RotateCcw
+  Edit3
 } from 'lucide-react';
-import { ClientSummary } from '../types';
-
-type PeriodFilter = 'all' | 'this_month' | 'last_30_days' | 'custom';
+import { ClientSummary, Credit, Payment } from '../types';
 
 interface ClientDetailModalProps {
   clientId: string;
@@ -39,65 +39,29 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
   onOpenPayment,
   onOpenReminder,
 }) => {
-  const { getClientSummary, getClientCredits, getClientPayments, toggleBlockClient } = useCredit();
+  const {
+    getClientSummary,
+    getClientCredits,
+    getClientPayments,
+    loadClientHistory,
+    isLoadingClientHistory,
+    toggleBlockClient,
+  } = useCredit();
   const { t, language, isRTL } = useLanguage();
   const client = getClientSummary(clientId);
   const credits = getClientCredits(clientId);
   const payments = getClientPayments(clientId);
 
+  useEffect(() => {
+    if (clientId) {
+      loadClientHistory(clientId);
+    }
+  }, [clientId, loadClientHistory]);
+
   const [expandedCreditId, setExpandedCreditId] = useState<string | null>(null);
-  const [periodFilter, setPeriodFilter] = useState<PeriodFilter>('all');
-  const [customStartDate, setCustomStartDate] = useState<string>('');
-  const [customEndDate, setCustomEndDate] = useState<string>('');
-
-  // Date filtering logic
-  const { filteredCredits, filteredPayments, filteredCreditsTotal, filteredPaymentsTotal } = useMemo(() => {
-    const getDateOnly = (dStr: string) => {
-      if (!dStr) return '';
-      return dStr.slice(0, 10);
-    };
-
-    const now = new Date();
-    const currentYear = now.getFullYear();
-    const currentMonth = String(now.getMonth() + 1).padStart(2, '0');
-    const firstDayOfMonth = `${currentYear}-${currentMonth}-01`;
-
-    const d30 = new Date();
-    d30.setDate(d30.getDate() - 30);
-    const last30DaysStart = `${d30.getFullYear()}-${String(d30.getMonth() + 1).padStart(2, '0')}-${String(d30.getDate()).padStart(2, '0')}`;
-
-    const isDateInFilter = (dateStr: string) => {
-      const itemDate = getDateOnly(dateStr);
-      if (!itemDate) return true;
-
-      if (periodFilter === 'all') return true;
-      if (periodFilter === 'this_month') {
-        return itemDate >= firstDayOfMonth;
-      }
-      if (periodFilter === 'last_30_days') {
-        return itemDate >= last30DaysStart;
-      }
-      if (periodFilter === 'custom') {
-        if (customStartDate && itemDate < customStartDate) return false;
-        if (customEndDate && itemDate > customEndDate) return false;
-        return true;
-      }
-      return true;
-    };
-
-    const fCredits = credits.filter((c) => isDateInFilter(c.date));
-    const fPayments = payments.filter((p) => isDateInFilter(p.date));
-
-    const fCreditsTotal = fCredits.reduce((sum, c) => sum + c.amount, 0);
-    const fPaymentsTotal = fPayments.reduce((sum, p) => sum + p.amount, 0);
-
-    return {
-      filteredCredits: fCredits,
-      filteredPayments: fPayments,
-      filteredCreditsTotal: fCreditsTotal,
-      filteredPaymentsTotal: fPaymentsTotal,
-    };
-  }, [credits, payments, periodFilter, customStartDate, customEndDate]);
+  const [isEditingClient, setIsEditingClient] = useState(false);
+  const [editingCredit, setEditingCredit] = useState<Credit | null>(null);
+  const [editingPayment, setEditingPayment] = useState<Payment | null>(null);
 
   if (!client) return null;
 
@@ -107,7 +71,7 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
       <div
         id="client-detail-sheet"
-        className="w-full max-w-md bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl max-h-[92vh] flex flex-col overflow-hidden animate-in slide-in-from-bottom duration-200"
+        className="w-full max-w-md sm:max-w-lg bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl max-h-[92dvh] sm:max-h-[88vh] flex flex-col overflow-hidden animate-in slide-in-from-bottom duration-200"
       >
         {/* Header bar */}
         <div className="bg-emerald-800 text-white p-4 shrink-0 flex items-center justify-between">
@@ -128,17 +92,28 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
             </div>
           </div>
 
-          <button
-            id="btn-close-client-detail"
-            onClick={onClose}
-            className="p-1.5 rounded-full text-emerald-200 hover:text-white hover:bg-emerald-700/80 transition shrink-0"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              id="btn-edit-client-header"
+              onClick={() => setIsEditingClient(true)}
+              className="p-1.5 rounded-lg text-emerald-200 hover:text-white hover:bg-emerald-700/80 transition flex items-center gap-1 text-xs font-semibold"
+              title="Modifier les informations du client"
+            >
+              <Edit3 className="w-4 h-4" />
+              <span className="hidden sm:inline">Modifier</span>
+            </button>
+            <button
+              id="btn-close-client-detail"
+              onClick={onClose}
+              className="p-1.5 rounded-full text-emerald-200 hover:text-white hover:bg-emerald-700/80 transition"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {/* Scrollable body */}
-        <div className="p-4 space-y-4 overflow-y-auto flex-1 min-h-0">
+        <div className="p-4 space-y-4 overflow-y-auto min-h-0 flex-1 overscroll-y-contain custom-scrollbar">
           {/* Main Balance & Status Card */}
           <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 shadow-xs">
             <div className="flex items-start justify-between">
@@ -254,157 +229,29 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
             </button>
           </div>
 
-          {/* Filtre par Date / Période personnalisée */}
-          <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2.5">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-1.5 text-xs font-bold text-slate-700">
-                <Filter className="w-3.5 h-3.5 text-emerald-600" />
-                <span>
-                  {language === 'ar'
-                    ? 'تصفية السجل بالتاريخ'
-                    : "Filtrer l'historique par date"}
-                </span>
-              </div>
-              {periodFilter !== 'all' && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPeriodFilter('all');
-                    setCustomStartDate('');
-                    setCustomEndDate('');
-                  }}
-                  className="text-[11px] font-medium text-emerald-700 hover:text-emerald-800 flex items-center gap-1 transition"
-                >
-                  <RotateCcw className="w-3 h-3" />
-                  <span>
-                    {language === 'ar' ? 'إعادة ضبط' : 'Tout afficher'}
-                  </span>
-                </button>
-              )}
-            </div>
-
-            {/* Sélecteur de période */}
-            <div className="grid grid-cols-4 gap-1.5">
-              <button
-                type="button"
-                onClick={() => setPeriodFilter('all')}
-                className={`py-1.5 px-1 rounded-lg text-xs font-semibold text-center transition ${
-                  periodFilter === 'all'
-                    ? 'bg-emerald-700 text-white shadow-xs'
-                    : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                {language === 'ar' ? 'الكل' : 'Tout'}
-              </button>
-              <button
-                type="button"
-                onClick={() => setPeriodFilter('this_month')}
-                className={`py-1.5 px-1 rounded-lg text-xs font-semibold text-center transition ${
-                  periodFilter === 'this_month'
-                    ? 'bg-emerald-700 text-white shadow-xs'
-                    : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                {language === 'ar' ? 'هذا الشهر' : 'Ce mois'}
-              </button>
-              <button
-                type="button"
-                onClick={() => setPeriodFilter('last_30_days')}
-                className={`py-1.5 px-1 rounded-lg text-xs font-semibold text-center transition ${
-                  periodFilter === 'last_30_days'
-                    ? 'bg-emerald-700 text-white shadow-xs'
-                    : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                {language === 'ar' ? '30 يوماً' : '30 jours'}
-              </button>
-              <button
-                type="button"
-                onClick={() => setPeriodFilter('custom')}
-                className={`py-1.5 px-1 rounded-lg text-xs font-semibold text-center transition ${
-                  periodFilter === 'custom'
-                    ? 'bg-emerald-700 text-white shadow-xs'
-                    : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                {language === 'ar' ? 'مخصص' : 'Période'}
-              </button>
-            </div>
-
-            {/* Champs Date Début / Fin si Période personnalisée */}
-            {periodFilter === 'custom' && (
-              <div className="pt-2 border-t border-slate-200/70 grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-[10px] font-semibold text-slate-500 mb-1">
-                    {language === 'ar' ? 'من تاريخ :' : 'Du :'}
-                  </label>
-                  <input
-                    type="date"
-                    value={customStartDate}
-                    onChange={(e) => setCustomStartDate(e.target.value)}
-                    className="w-full text-xs bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 text-slate-800 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[10px] font-semibold text-slate-500 mb-1">
-                    {language === 'ar' ? 'إلى تاريخ :' : 'Au :'}
-                  </label>
-                  <input
-                    type="date"
-                    value={customEndDate}
-                    onChange={(e) => setCustomEndDate(e.target.value)}
-                    className="w-full text-xs bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 text-slate-800 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                  />
-                </div>
-              </div>
-            )}
-
-            {/* Récapitulatif sous-totaux sur la période sélectionnée */}
-            {periodFilter !== 'all' && (
-              <div className="text-[11px] text-slate-600 flex items-center justify-between pt-1 border-t border-slate-200/60">
-                <span>
-                  {language === 'ar'
-                    ? 'إجمالي الفترة :'
-                    : 'Sur la période :'}
-                </span>
-                <span className="font-semibold text-slate-800">
-                  <span className="text-amber-700">+{formatFCFA(filteredCreditsTotal)}</span>
-                  {' • '}
-                  <span className="text-emerald-700">-{formatFCFA(filteredPaymentsTotal)}</span>
-                </span>
-              </div>
-            )}
-          </div>
-
           {/* Historique des Crédits */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
                 <Layers className="w-3.5 h-3.5 text-emerald-600" />
-                {language === 'ar'
-                  ? `سجل الديون (${filteredCredits.length}${periodFilter !== 'all' ? ` / ${credits.length}` : ''})`
-                  : `Historique des crédits (${filteredCredits.length}${periodFilter !== 'all' ? ` / ${credits.length}` : ''})`}
+                {language === 'ar' ? `سجل الديون (${credits.length})` : `Historique des crédits (${credits.length})`}
               </h3>
               <span className="text-[11px] text-slate-400">
-                {periodFilter !== 'all'
-                  ? (language === 'ar' ? 'مجموع الفترة : ' : 'Période : ') + formatFCFA(filteredCreditsTotal)
-                  : (language === 'ar' ? 'المجموع : ' : 'Total : ') + formatFCFA(client.totalCredits)}
+                {language === 'ar' ? 'المجموع : ' : 'Total : '}{formatFCFA(client.totalCredits)}
               </span>
             </div>
 
             {credits.length === 0 ? (
               <div className="p-4 bg-slate-50 rounded-xl text-center text-xs text-slate-400 border border-slate-100">
-                {language === 'ar' ? 'لا يوجد أي دين مسجل لهذا الزبون.' : 'Aucun crédit enregistré pour ce client.'}
-              </div>
-            ) : filteredCredits.length === 0 ? (
-              <div className="p-4 bg-slate-50 rounded-xl text-center text-xs text-slate-400 border border-slate-100">
-                {language === 'ar'
-                  ? 'لا توجد ديون مسجلة خلال هذه الفترة.'
-                  : 'Aucun crédit enregistré sur la période sélectionnée.'}
+                {isLoadingClientHistory ? (
+                  <span>{language === 'ar' ? 'جار التحميل...' : 'Chargement des crédits...'}</span>
+                ) : (
+                  <span>{language === 'ar' ? 'لا يوجد أي دين مسجل لهذا الزبون.' : 'Aucun crédit enregistré pour ce client.'}</span>
+                )}
               </div>
             ) : (
               <div className="space-y-2">
-                {filteredCredits.map((credit, idx) => {
+                {credits.map((credit, idx) => {
                   const isExpanded = expandedCreditId === credit.id;
                   const hasItems = credit.items && credit.items.length > 0;
 
@@ -421,7 +268,7 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
                         <div>
                           <div className="flex items-center gap-1.5">
                             <span className="text-xs font-bold text-slate-900">
-                              {language === 'ar' ? `دين #${filteredCredits.length - idx}` : `Crédit #${filteredCredits.length - idx}`}
+                              {language === 'ar' ? `دين #${credits.length - idx}` : `Crédit #${credits.length - idx}`}
                             </span>
                             {credit.description && (
                               <span className="text-xs text-slate-600">— {credit.description}</span>
@@ -438,10 +285,21 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
                           </div>
                         </div>
 
-                        <div className={`shrink-0 flex items-center gap-1.5 ${isRTL ? 'text-left' : 'text-right'}`}>
+                        <div className={`shrink-0 flex items-center gap-2 ${isRTL ? 'text-left' : 'text-right'}`}>
                           <span className="text-sm font-bold text-slate-900">
                             {formatFCFA(credit.amount)}
                           </span>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setEditingCredit(credit);
+                            }}
+                            className="p-1 rounded-md text-slate-400 hover:text-amber-700 hover:bg-amber-50 transition"
+                            title="Modifier ce crédit"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                          </button>
                           {hasItems && (
                             <button
                               type="button"
@@ -490,30 +348,24 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
             <div className="flex items-center justify-between">
               <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
                 <Receipt className="w-3.5 h-3.5 text-emerald-600" />
-                {language === 'ar'
-                  ? `سجل المدفوعات (${filteredPayments.length}${periodFilter !== 'all' ? ` / ${payments.length}` : ''})`
-                  : `Historique des paiements (${filteredPayments.length}${periodFilter !== 'all' ? ` / ${payments.length}` : ''})`}
+                {language === 'ar' ? `سجل المدفوعات (${payments.length})` : `Historique des paiements (${payments.length})`}
               </h3>
               <span className="text-[11px] text-emerald-700 font-medium">
-                {periodFilter !== 'all'
-                  ? (language === 'ar' ? 'مدفوعات الفترة : ' : 'Période : ') + formatFCFA(filteredPaymentsTotal)
-                  : (language === 'ar' ? 'المجموع المسدد : ' : 'Total réglé : ') + formatFCFA(client.totalPayments)}
+                {language === 'ar' ? 'المجموع المسدد : ' : 'Total réglé : '}{formatFCFA(client.totalPayments)}
               </span>
             </div>
 
             {payments.length === 0 ? (
               <div className="p-4 bg-slate-50 rounded-xl text-center text-xs text-slate-400 border border-slate-100">
-                {language === 'ar' ? 'لا يوجد أي سداد مسجل حالياً.' : "Aucun paiement enregistré pour l'instant."}
-              </div>
-            ) : filteredPayments.length === 0 ? (
-              <div className="p-4 bg-slate-50 rounded-xl text-center text-xs text-slate-400 border border-slate-100">
-                {language === 'ar'
-                  ? 'لا توجد مدفوعات مسجلة خلال هذه الفترة.'
-                  : 'Aucun paiement enregistré sur la période sélectionnée.'}
+                {isLoadingClientHistory ? (
+                  <span>{language === 'ar' ? 'جار التحميل...' : 'Chargement des paiements...'}</span>
+                ) : (
+                  <span>{language === 'ar' ? 'لا يوجد أي سداد مسجل حالياً.' : "Aucun paiement enregistré pour l'instant."}</span>
+                )}
               </div>
             ) : (
               <div className="space-y-1.5">
-                {filteredPayments.map((payment, idx) => (
+                {payments.map((payment, idx) => (
                   <div
                     key={payment.id}
                     id={`payment-item-${payment.id}`}
@@ -521,15 +373,25 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
                   >
                     <div>
                       <div className="text-xs font-semibold text-slate-800">
-                        {language === 'ar' ? `سداد #${filteredPayments.length - idx}` : `Paiement #${filteredPayments.length - idx}`}
+                        {language === 'ar' ? `سداد #${payments.length - idx}` : `Paiement #${payments.length - idx}`}
                       </div>
                       <div className="text-[11px] text-slate-500">
                         {formatDateDisplay(payment.date)} • {payment.notes || (language === 'ar' ? 'سداد عند الشباك' : 'Règlement au comptoir')}
                       </div>
                     </div>
 
-                    <div className="text-sm font-bold text-emerald-700">
-                      -{formatFCFA(payment.amount)}
+                    <div className="flex items-center gap-2">
+                      <div className="text-sm font-bold text-emerald-700">
+                        -{formatFCFA(payment.amount)}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setEditingPayment(payment)}
+                        className="p-1 rounded-md text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 transition"
+                        title="Modifier ce paiement"
+                      >
+                        <Edit3 className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   </div>
                 ))}
@@ -548,6 +410,34 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Sub Modals for editing */}
+      {isEditingClient && (
+        <EditClientModal
+          client={client}
+          onClose={() => setIsEditingClient(false)}
+          onClientDeleted={() => {
+            setIsEditingClient(false);
+            onClose();
+          }}
+        />
+      )}
+
+      {editingCredit && (
+        <EditCreditModal
+          credit={editingCredit}
+          clientName={fullName}
+          onClose={() => setEditingCredit(null)}
+        />
+      )}
+
+      {editingPayment && (
+        <EditPaymentModal
+          payment={editingPayment}
+          clientName={fullName}
+          onClose={() => setEditingPayment(null)}
+        />
+      )}
     </div>
   );
 };

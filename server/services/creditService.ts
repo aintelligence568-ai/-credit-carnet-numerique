@@ -27,6 +27,9 @@ export interface ClientSummaryResponse {
   isBlocked: boolean;
   isActive: boolean;
   createdAt: string;
+  creditsCount?: number;
+  paymentsCount?: number;
+  hasAnomaly?: boolean;
 }
 
 export interface CreditDetailResponse {
@@ -58,6 +61,7 @@ export interface PaymentResponse {
   amount: number;
   paymentDate: string;
   notes?: string;
+  idempotencyKey?: string | null;
   createdAt: string;
 }
 
@@ -130,7 +134,16 @@ export class CreditService {
 
     const totalCredits = totalCreditsRow ? totalCreditsRow.total : 0;
     const totalPayments = totalPaymentsRow ? totalPaymentsRow.total : 0;
-    const balance = Math.max(0, totalCredits - totalPayments);
+    // Calculate raw mathematical balance without masking accounting anomalies
+    const balance = totalCredits - totalPayments;
+    const hasAnomaly = balance < 0;
+
+    // Get counts for client summary
+    const countsRow = db.prepare(`
+      SELECT 
+        (SELECT COUNT(*) FROM credits WHERE client_id = ? AND user_id = ?) as creditsCount,
+        (SELECT COUNT(*) FROM payments WHERE client_id = ? AND user_id = ?) as paymentsCount
+    `).get(clientId, userId, clientId, userId) as any;
 
     // Get all credits to determine earliest due date and overall debt status
     const credits = db.prepare(`
@@ -195,32 +208,158 @@ export class CreditService {
       isBlocked: client.credit_status === 'BLOCKED',
       isActive: Boolean(client.is_active),
       createdAt: client.created_at,
+      creditsCount: countsRow ? countsRow.creditsCount : 0,
+      paymentsCount: countsRow ? countsRow.paymentsCount : 0,
+      hasAnomaly,
     };
   }
 
   /**
-   * Get all active client summaries for user
+   * Get all active client summaries for user with O(1) constant SQL query count.
+   * Eliminates the N+1 SQL loop while preserving 100% of mathematical integrity,
+   * debt status logic, zero cartesian product, and exact field structure.
    */
   static listClients(userId: string, search?: string): ClientSummaryResponse[] {
     let query = `
-      SELECT id FROM clients 
-      WHERE user_id = ? AND is_active = 1
+      WITH client_credits AS (
+        SELECT 
+          client_id,
+          COALESCE(SUM(amount), 0) AS total_credits,
+          COUNT(id) AS credits_count
+        FROM credits
+        WHERE user_id = ?
+        GROUP BY client_id
+      ),
+      client_payments AS (
+        SELECT 
+          client_id,
+          COALESCE(SUM(amount), 0) AS total_payments,
+          COUNT(id) AS payments_count
+        FROM payments
+        WHERE user_id = ?
+        GROUP BY client_id
+      )
+      SELECT 
+        c.id,
+        c.user_id,
+        c.first_name,
+        c.last_name,
+        c.phone,
+        c.credit_status,
+        c.is_active,
+        c.created_at,
+        c.updated_at,
+        COALESCE(cc.total_credits, 0) AS total_credits,
+        COALESCE(cc.credits_count, 0) AS credits_count,
+        COALESCE(cp.total_payments, 0) AS total_payments,
+        COALESCE(cp.payments_count, 0) AS payments_count
+      FROM clients c
+      LEFT JOIN client_credits cc ON cc.client_id = c.id
+      LEFT JOIN client_payments cp ON cp.client_id = c.id
+      WHERE c.user_id = ? AND c.is_active = 1
     `;
-    const params: any[] = [userId];
+    const params: any[] = [userId, userId, userId];
 
     if (search && search.trim()) {
       const term = `%${search.trim().toLowerCase()}%`;
       const normalizedTerm = `%${normalizePhone(search.trim())}%`;
-      query += ` AND (LOWER(first_name) LIKE ? OR LOWER(last_name) LIKE ? OR phone LIKE ?)`;
+      query += ` AND (LOWER(c.first_name) LIKE ? OR LOWER(c.last_name) LIKE ? OR c.phone LIKE ?)`;
       params.push(term, term, normalizedTerm);
     }
 
-    query += ` ORDER BY updated_at DESC`;
+    query += ` ORDER BY c.updated_at DESC`;
 
-    const rows = db.prepare(query).all(...params) as any[];
-    return rows
-      .map((r) => this.getClientSummary(userId, r.id))
-      .filter((c): c is ClientSummaryResponse => c !== null);
+    const clientRows = db.prepare(query).all(...params) as any[];
+    if (clientRows.length === 0) {
+      return [];
+    }
+
+    // Single indexed query to fetch credits for all active clients of this user
+    // ordered by due_date ASC to compute dual debt status without querying per-client.
+    const creditsRows = db.prepare(`
+      SELECT client_id, id, due_date, amount
+      FROM credits
+      WHERE user_id = ?
+      ORDER BY due_date ASC
+    `).all(userId) as any[];
+
+    const creditsByClient = new Map<string, Array<{ id: string; due_date: string; amount: number }>>();
+    for (const cred of creditsRows) {
+      let list = creditsByClient.get(cred.client_id);
+      if (!list) {
+        list = [];
+        creditsByClient.set(cred.client_id, list);
+      }
+      list.push(cred);
+    }
+
+    return clientRows.map((c) => {
+      const totalCredits = Number(c.total_credits) || 0;
+      const totalPayments = Number(c.total_payments) || 0;
+      const balance = totalCredits - totalPayments;
+      const hasAnomaly = balance < 0;
+
+      const credits = creditsByClient.get(c.id) || [];
+
+      let overallStatus: DebtStatus = 'SETTLED';
+      let daysOverdue: number | undefined;
+      let daysUntilDue: number | undefined;
+      let earliestDueDate: string | undefined;
+
+      if (balance > 0 && credits.length > 0) {
+        const overdueCredit = credits.find((cr) => {
+          const res = computeDebtStatus(cr.due_date, balance);
+          return res.status === 'OVERDUE';
+        });
+
+        if (overdueCredit) {
+          const res = computeDebtStatus(overdueCredit.due_date, balance);
+          overallStatus = 'OVERDUE';
+          daysOverdue = res.daysOverdue;
+          earliestDueDate = overdueCredit.due_date;
+        } else {
+          const dueSoonCredit = credits.find((cr) => {
+            const res = computeDebtStatus(cr.due_date, balance);
+            return res.status === 'DUE_SOON';
+          });
+
+          if (dueSoonCredit) {
+            const res = computeDebtStatus(dueSoonCredit.due_date, balance);
+            overallStatus = 'DUE_SOON';
+            daysUntilDue = res.daysUntilDue;
+            earliestDueDate = dueSoonCredit.due_date;
+          } else {
+            overallStatus = 'UP_TO_DATE';
+            const firstCredit = credits[0];
+            const res = computeDebtStatus(firstCredit.due_date, balance);
+            daysUntilDue = res.daysUntilDue;
+            earliestDueDate = firstCredit.due_date;
+          }
+        }
+      }
+
+      return {
+        id: c.id,
+        userId: c.user_id,
+        firstName: c.first_name,
+        lastName: c.last_name,
+        phone: c.phone,
+        creditStatus: c.credit_status as CreditAuthStatus,
+        status: overallStatus,
+        balance,
+        totalCredits,
+        totalPayments,
+        daysOverdue,
+        daysUntilDue,
+        earliestDueDate,
+        isBlocked: c.credit_status === 'BLOCKED',
+        isActive: Boolean(c.is_active),
+        createdAt: c.created_at,
+        creditsCount: Number(c.credits_count) || 0,
+        paymentsCount: Number(c.payments_count) || 0,
+        hasAnomaly,
+      };
+    });
   }
 
   /**
@@ -284,6 +423,7 @@ export class CreditService {
       amount: p.amount,
       paymentDate: p.payment_date,
       notes: p.notes || undefined,
+      idempotencyKey: p.idempotency_key || null,
       createdAt: p.created_at,
     }));
   }
@@ -469,8 +609,8 @@ export class CreditService {
 
       // Update client's updated_at
       db.prepare(`
-        UPDATE clients SET updated_at = ? WHERE id = ?
-      `).run(now, clientId);
+        UPDATE clients SET updated_at = ? WHERE id = ? AND user_id = ?
+      `).run(now, clientId, userId);
 
       db.exec('COMMIT;');
     } catch (err) {
@@ -483,52 +623,70 @@ export class CreditService {
   }
 
   /**
-   * Create a payment with strict business rules and concurrency protection:
-   * 1. Acquire write lock using BEGIN IMMEDIATE
-   * 2. Check client exists and is active inside transaction
-   * 3. Recalculate current real balance inside transaction
-   * 4. Verify payment does not exceed current balance
-   * 5. Reject and ROLLBACK if amount > balance with error PAYMENT_EXCEEDS_BALANCE
-   * 6. Record payment, update client and COMMIT
+   * Create a payment with strict financial integrity and idempotency:
+   * 1. Fast idempotency check: if key already used with matching client & amount, return existing
+   * 2. If key reused with conflicting client/amount, reject with IDEMPOTENCY_CONFLICT (409)
+   * 3. Acquire SQLite write lock immediately (BEGIN IMMEDIATE) to prevent concurrent race conditions
+   * 4. Recalculate real balance inside transaction
+   * 5. Verify payment does not exceed real balance (rejection: PAYMENT_EXCEEDS_BALANCE)
+   * 6. Record payment with idempotency key and commit atomically
    */
   static createPayment(
     userId: string,
     clientId: string,
     amount: number,
     notes?: string,
-    creditId?: string | null
-  ): { paymentId: string; clientSummary: ClientSummaryResponse; newBalance: number } {
+    creditId?: string | null,
+    idempotencyKey?: string
+  ): { paymentId: string; clientSummary: ClientSummaryResponse; newBalance: number; isIdempotentReplay?: boolean } {
     if (!amount || amount <= 0) {
       const err = new Error('Le montant du paiement doit être un entier supérieur à zéro.');
       (err as any).code = 'INVALID_AMOUNT';
       throw err;
     }
 
-    // Acquire write lock immediately to serialize concurrent payment operations
-    const maxRetries = 20;
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
-      try {
-        db.exec('BEGIN IMMEDIATE;');
-        break;
-      } catch (err: any) {
-        const isBusy =
-          err.errcode === 5 ||
-          (err.message && (err.message.includes('busy') || err.message.includes('locked')));
-        if (isBusy && attempt < maxRetries - 1) {
-          const sleepMs = 20 * (attempt + 1);
-          const shared = new Int32Array(new SharedArrayBuffer(4));
-          Atomics.wait(shared, 0, 0, sleepMs);
-          continue;
+    const cleanKey = idempotencyKey ? String(idempotencyKey).trim() : null;
+
+    // Fast-path idempotency check before transaction
+    if (cleanKey) {
+      const existing = db.prepare(`
+        SELECT id, client_id, amount, notes, payment_date, created_at 
+        FROM payments 
+        WHERE user_id = ? AND idempotency_key = ?
+      `).get(userId, cleanKey) as any;
+
+      if (existing) {
+        if (existing.client_id !== clientId || existing.amount !== amount) {
+          const err = new Error(
+            `Conflit d'idempotence : cette clé a déjà été utilisée pour une transaction différente (Client: ${existing.client_id}, Montant: ${existing.amount} FCFA).`
+          );
+          (err as any).code = 'IDEMPOTENCY_CONFLICT';
+          (err as any).status = 409;
+          throw err;
         }
-        throw err;
+
+        const clientSummary = this.getClientSummary(userId, clientId);
+        if (!clientSummary) {
+          const err = new Error('Client introuvable.');
+          (err as any).code = 'CLIENT_NOT_FOUND';
+          throw err;
+        }
+
+        return {
+          paymentId: existing.id,
+          clientSummary,
+          newBalance: clientSummary.balance,
+          isIdempotentReplay: true,
+        };
       }
     }
 
+    // Acquire write lock immediately to serialize concurrent payment requests
+    db.exec('BEGIN IMMEDIATE;');
     try {
-      // 1. Check client belongs to user & is active inside transaction
+      // 1. Verify client existence and active status INSIDE transaction
       const client = db.prepare(`
-        SELECT id, is_active FROM clients 
-        WHERE id = ? AND user_id = ?
+        SELECT id, is_active FROM clients WHERE id = ? AND user_id = ?
       `).get(clientId, userId) as any;
 
       if (!client || !client.is_active) {
@@ -537,24 +695,43 @@ export class CreditService {
         throw err;
       }
 
-      // 2. Recalculate balance inside the immediate write transaction
-      const totalCreditsRow = db.prepare(`
-        SELECT COALESCE(SUM(amount), 0) as total 
-        FROM credits 
-        WHERE client_id = ? AND user_id = ?
-      `).get(clientId, userId) as any;
+      // 2. Double-check idempotency key INSIDE transaction
+      if (cleanKey) {
+        const existingInTx = db.prepare(`
+          SELECT id, client_id, amount FROM payments WHERE user_id = ? AND idempotency_key = ?
+        `).get(userId, cleanKey) as any;
 
+        if (existingInTx) {
+          db.exec('ROLLBACK;');
+          if (existingInTx.client_id !== clientId || existingInTx.amount !== amount) {
+            const err = new Error(`Conflit d'idempotence détecté lors de la transaction.`);
+            (err as any).code = 'IDEMPOTENCY_CONFLICT';
+            (err as any).status = 409;
+            throw err;
+          }
+          const clientSummary = this.getClientSummary(userId, clientId)!;
+          return {
+            paymentId: existingInTx.id,
+            clientSummary,
+            newBalance: clientSummary.balance,
+            isIdempotentReplay: true,
+          };
+        }
+      }
+
+      // 3. Authoritative balance recalculation inside the active write transaction
+      const totalCreditsRow = db.prepare(`
+        SELECT COALESCE(SUM(amount), 0) as total FROM credits WHERE client_id = ? AND user_id = ?
+      `).get(clientId, userId) as any;
       const totalPaymentsRow = db.prepare(`
-        SELECT COALESCE(SUM(amount), 0) as total 
-        FROM payments 
-        WHERE client_id = ? AND user_id = ?
+        SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE client_id = ? AND user_id = ?
       `).get(clientId, userId) as any;
 
       const totalCredits = totalCreditsRow ? totalCreditsRow.total : 0;
       const totalPayments = totalPaymentsRow ? totalPaymentsRow.total : 0;
       const currentBalance = totalCredits - totalPayments;
 
-      // 3. RULE 5: Solde ne peut pas devenir négatif
+      // 4. Strict business rule: Payment cannot exceed remaining debt
       if (amount > currentBalance) {
         const err = new Error(
           `Le montant payé (${amount} FCFA) dépasse le solde restant (${currentBalance} FCFA). Le solde ne peut pas être négatif.`
@@ -573,8 +750,8 @@ export class CreditService {
       const todayDate = now.split('T')[0];
 
       db.prepare(`
-        INSERT INTO payments (id, user_id, client_id, credit_id, amount, payment_date, notes, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO payments (id, user_id, client_id, credit_id, amount, payment_date, notes, idempotency_key, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         paymentId,
         userId,
@@ -583,12 +760,13 @@ export class CreditService {
         amount,
         todayDate,
         notes || null,
+        cleanKey || null,
         now
       );
 
       db.prepare(`
-        UPDATE clients SET updated_at = ? WHERE id = ?
-      `).run(now, clientId);
+        UPDATE clients SET updated_at = ? WHERE id = ? AND user_id = ?
+      `).run(now, clientId, userId);
 
       db.exec('COMMIT;');
 
@@ -598,12 +776,28 @@ export class CreditService {
         clientSummary: updatedSummary,
         newBalance: updatedSummary.balance,
       };
-    } catch (err) {
+    } catch (err: any) {
       try {
         db.exec('ROLLBACK;');
-      } catch (_) {
-        // Ignore rollback error if transaction already terminated
+      } catch {}
+
+      // In case parallel request with identical idempotencyKey committed concurrently
+      if (cleanKey && (err.message?.includes('uq_payments_user_idempotency') || err.message?.includes('UNIQUE constraint failed'))) {
+        const existing = db.prepare(`
+          SELECT id, client_id, amount FROM payments WHERE user_id = ? AND idempotency_key = ?
+        `).get(userId, cleanKey) as any;
+
+        if (existing && existing.client_id === clientId && existing.amount === amount) {
+          const clientSummary = this.getClientSummary(userId, clientId)!;
+          return {
+            paymentId: existing.id,
+            clientSummary,
+            newBalance: clientSummary.balance,
+            isIdempotentReplay: true,
+          };
+        }
       }
+
       throw err;
     }
   }
@@ -634,6 +828,258 @@ export class CreditService {
     `).run(now, clientId, userId);
 
     return { success: true };
+  }
+
+  /**
+   * Update client details (First name, last name, phone)
+   */
+  static updateClient(
+    userId: string,
+    clientId: string,
+    data: { firstName?: string; lastName?: string; phone?: string }
+  ): ClientSummaryResponse {
+    const client = db.prepare('SELECT * FROM clients WHERE id = ? AND user_id = ?').get(clientId, userId) as any;
+    if (!client) {
+      const err = new Error('Client introuvable.');
+      (err as any).code = 'CLIENT_NOT_FOUND';
+      throw err;
+    }
+
+    let finalPhone = client.phone;
+    if (data.phone) {
+      const normalized = normalizePhone(data.phone);
+      if (!normalized) {
+        const err = new Error('Numéro de téléphone invalide.');
+        (err as any).code = 'INVALID_PHONE';
+        throw err;
+      }
+      // Check duplicate with another client of same user
+      const existing = db.prepare('SELECT id FROM clients WHERE user_id = ? AND phone = ? AND id != ?').get(userId, normalized, clientId) as any;
+      if (existing) {
+        const err = new Error(`Un autre client avec le numéro ${normalized} existe déjà.`);
+        (err as any).code = 'PHONE_ALREADY_EXISTS';
+        throw err;
+      }
+      finalPhone = normalized;
+    }
+
+    const finalFirstName = data.firstName !== undefined ? data.firstName.trim() : client.first_name;
+    const finalLastName = data.lastName !== undefined ? data.lastName.trim() : client.last_name;
+
+    if (!finalFirstName || !finalLastName) {
+      const err = new Error('Le prénom et le nom sont requis.');
+      (err as any).code = 'MISSING_NAME';
+      throw err;
+    }
+
+    const now = new Date().toISOString();
+    db.prepare(`
+      UPDATE clients 
+      SET first_name = ?, last_name = ?, phone = ?, updated_at = ?
+      WHERE id = ? AND user_id = ?
+    `).run(finalFirstName, finalLastName, finalPhone, now, clientId, userId);
+
+    return this.getClientSummary(userId, clientId)!;
+  }
+
+  /**
+   * Update a credit entry (amount, due date, description)
+   */
+  static updateCredit(
+    userId: string,
+    creditId: string,
+    data: { amount?: number; dueDate?: string; description?: string }
+  ): { creditId: string; clientSummary: ClientSummaryResponse } {
+    const credit = db.prepare('SELECT * FROM credits WHERE id = ? AND user_id = ?').get(creditId, userId) as any;
+    if (!credit) {
+      const err = new Error('Crédit introuvable.');
+      (err as any).code = 'CREDIT_NOT_FOUND';
+      throw err;
+    }
+
+    const clientId = credit.client_id;
+    let newAmount = credit.amount;
+
+    if (data.amount !== undefined) {
+      const parsedAmount = Math.round(Number(data.amount));
+      if (isNaN(parsedAmount) || parsedAmount <= 0) {
+        const err = new Error('Le montant du crédit doit être un entier strictement positif.');
+        (err as any).code = 'INVALID_AMOUNT';
+        throw err;
+      }
+      newAmount = parsedAmount;
+
+      // Ensure client total credits remains >= total payments
+      const totalOtherCreditsRow = db.prepare(`
+        SELECT COALESCE(SUM(amount), 0) as total FROM credits WHERE client_id = ? AND user_id = ? AND id != ?
+      `).get(clientId, userId, creditId) as any;
+      const totalPaymentsRow = db.prepare(`
+        SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE client_id = ? AND user_id = ?
+      `).get(clientId, userId) as any;
+
+      const newTotalCredits = (totalOtherCreditsRow?.total || 0) + newAmount;
+      const totalPayments = totalPaymentsRow?.total || 0;
+
+      if (newTotalCredits < totalPayments) {
+        const err = new Error(
+          `Impossible de réduire le crédit à ${newAmount} FCFA car le total remboursé par le client (${totalPayments} FCFA) dépasserait ses crédits.`
+        );
+        (err as any).code = 'CREDIT_LOWER_THAN_PAYMENTS';
+        throw err;
+      }
+    }
+
+    const newDueDate = data.dueDate || credit.due_date;
+    const newDescription = data.description !== undefined ? (data.description ? data.description.trim() : null) : credit.description;
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      UPDATE credits
+      SET amount = ?, due_date = ?, description = ?, updated_at = ?
+      WHERE id = ? AND user_id = ?
+    `).run(newAmount, newDueDate, newDescription, now, creditId, userId);
+
+    db.prepare('UPDATE clients SET updated_at = ? WHERE id = ? AND user_id = ?').run(now, clientId, userId);
+
+    return {
+      creditId,
+      clientSummary: this.getClientSummary(userId, clientId)!,
+    };
+  }
+
+  /**
+   * Delete a credit entry
+   */
+  static deleteCredit(userId: string, creditId: string): { success: boolean; clientSummary: ClientSummaryResponse } {
+    const credit = db.prepare('SELECT * FROM credits WHERE id = ? AND user_id = ?').get(creditId, userId) as any;
+    if (!credit) {
+      const err = new Error('Crédit introuvable.');
+      (err as any).code = 'CREDIT_NOT_FOUND';
+      throw err;
+    }
+
+    const clientId = credit.client_id;
+    const totalOtherCreditsRow = db.prepare(`
+      SELECT COALESCE(SUM(amount), 0) as total FROM credits WHERE client_id = ? AND user_id = ? AND id != ?
+    `).get(clientId, userId, creditId) as any;
+    const totalPaymentsRow = db.prepare(`
+      SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE client_id = ? AND user_id = ?
+    `).get(clientId, userId) as any;
+
+    const otherCredits = totalOtherCreditsRow?.total || 0;
+    const totalPayments = totalPaymentsRow?.total || 0;
+
+    if (otherCredits < totalPayments) {
+      const err = new Error(
+        `Impossible de supprimer ce crédit : les paiements déjà enregistrés (${totalPayments} FCFA) dépasseraient le reste des crédits (${otherCredits} FCFA).`
+      );
+      (err as any).code = 'CANNOT_DELETE_CREDIT_PAYMENT_EXCEEDS';
+      throw err;
+    }
+
+    db.exec('BEGIN TRANSACTION;');
+    try {
+      db.prepare('DELETE FROM credit_items WHERE credit_id = ?').run(creditId);
+      db.prepare('DELETE FROM credits WHERE id = ? AND user_id = ?').run(creditId, userId);
+      const now = new Date().toISOString();
+      db.prepare('UPDATE clients SET updated_at = ? WHERE id = ? AND user_id = ?').run(now, clientId, userId);
+      db.exec('COMMIT;');
+    } catch (err) {
+      db.exec('ROLLBACK;');
+      throw err;
+    }
+
+    return {
+      success: true,
+      clientSummary: this.getClientSummary(userId, clientId)!,
+    };
+  }
+
+  /**
+   * Update a payment entry (amount, notes, date)
+   */
+  static updatePayment(
+    userId: string,
+    paymentId: string,
+    data: { amount?: number; notes?: string; paymentDate?: string }
+  ): { paymentId: string; clientSummary: ClientSummaryResponse } {
+    const payment = db.prepare('SELECT * FROM payments WHERE id = ? AND user_id = ?').get(paymentId, userId) as any;
+    if (!payment) {
+      const err = new Error('Paiement introuvable.');
+      (err as any).code = 'PAYMENT_NOT_FOUND';
+      throw err;
+    }
+
+    const clientId = payment.client_id;
+    let newAmount = payment.amount;
+
+    if (data.amount !== undefined) {
+      const parsedAmount = Math.round(Number(data.amount));
+      if (isNaN(parsedAmount) || parsedAmount <= 0) {
+        const err = new Error('Le montant du paiement doit être un nombre strictement positif.');
+        (err as any).code = 'INVALID_AMOUNT';
+        throw err;
+      }
+      newAmount = parsedAmount;
+
+      const totalCreditsRow = db.prepare(`
+        SELECT COALESCE(SUM(amount), 0) as total FROM credits WHERE client_id = ? AND user_id = ?
+      `).get(clientId, userId) as any;
+      const totalOtherPaymentsRow = db.prepare(`
+        SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE client_id = ? AND user_id = ? AND id != ?
+      `).get(clientId, userId, paymentId) as any;
+
+      const totalCredits = totalCreditsRow?.total || 0;
+      const newTotalPayments = (totalOtherPaymentsRow?.total || 0) + newAmount;
+
+      if (newTotalPayments > totalCredits) {
+        const err = new Error(
+          `Le nouveau montant (${newAmount} FCFA) ferait dépasser le total des dettes du client (${totalCredits} FCFA).`
+        );
+        (err as any).code = 'PAYMENT_EXCEEDS_BALANCE';
+        throw err;
+      }
+    }
+
+    const newDate = data.paymentDate || payment.payment_date;
+    const newNotes = data.notes !== undefined ? (data.notes ? data.notes.trim() : null) : payment.notes;
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      UPDATE payments
+      SET amount = ?, payment_date = ?, notes = ?
+      WHERE id = ? AND user_id = ?
+    `).run(newAmount, newDate, newNotes, paymentId, userId);
+
+    db.prepare('UPDATE clients SET updated_at = ? WHERE id = ? AND user_id = ?').run(now, clientId, userId);
+
+    return {
+      paymentId,
+      clientSummary: this.getClientSummary(userId, clientId)!,
+    };
+  }
+
+  /**
+   * Delete a payment entry
+   */
+  static deletePayment(userId: string, paymentId: string): { success: boolean; clientSummary: ClientSummaryResponse } {
+    const payment = db.prepare('SELECT * FROM payments WHERE id = ? AND user_id = ?').get(paymentId, userId) as any;
+    if (!payment) {
+      const err = new Error('Paiement introuvable.');
+      (err as any).code = 'PAYMENT_NOT_FOUND';
+      throw err;
+    }
+
+    const clientId = payment.client_id;
+    db.prepare('DELETE FROM payments WHERE id = ? AND user_id = ?').run(paymentId, userId);
+
+    const now = new Date().toISOString();
+    db.prepare('UPDATE clients SET updated_at = ? WHERE id = ? AND user_id = ?').run(now, clientId, userId);
+
+    return {
+      success: true,
+      clientSummary: this.getClientSummary(userId, clientId)!,
+    };
   }
 
   /**

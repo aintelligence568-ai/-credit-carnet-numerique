@@ -3,8 +3,9 @@ import { useCredit } from '../context/CreditContext';
 import { useLanguage } from '../context/LanguageContext';
 import { StatusBadge } from './StatusBadge';
 import { formatFCFA, formatDateDisplay } from '../utils/formatters';
-import { Search, UserPlus, Phone, ChevronRight, Filter } from 'lucide-react';
-import { ClientStatus } from '../types';
+import { Search, UserPlus, Phone, ChevronRight, Filter, Edit3 } from 'lucide-react';
+import { ClientStatus, ClientSummary } from '../types';
+import { EditClientModal } from './EditClientModal';
 
 interface ClientsViewProps {
   onSelectClient: (clientId: string) => void;
@@ -19,6 +20,7 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
   const { t, language, isRTL } = useLanguage();
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | ClientStatus>('ALL');
+  const [clientToEdit, setClientToEdit] = useState<ClientSummary | null>(null);
 
   const filteredClients = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -46,7 +48,7 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
   }, [clientSummaries, searchQuery, statusFilter]);
 
   return (
-    <div id="view-clients" className="space-y-3.5 pb-24">
+    <div id="view-clients" className="space-y-3.5 pb-6">
       {/* Search Bar & New Client CTA */}
       <div className="flex items-center gap-2">
         <div className="relative flex-1">
@@ -74,7 +76,7 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
       </div>
 
       {/* Filter Chips */}
-      <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar text-xs">
+      <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs overscroll-x-contain custom-scrollbar">
         <button
           id="filter-all"
           onClick={() => setStatusFilter('ALL')}
@@ -179,6 +181,18 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
                 </div>
 
                 <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setClientToEdit(client);
+                    }}
+                    className="p-1.5 rounded-lg text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 transition"
+                    title="Modifier la fiche client"
+                  >
+                    <Edit3 className="w-4 h-4" />
+                  </button>
+
                   <div className="text-right">
                     <div
                       className={`text-base font-extrabold ${
@@ -199,6 +213,13 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
           })
         )}
       </div>
+
+      {clientToEdit && (
+        <EditClientModal
+          client={clientToEdit}
+          onClose={() => setClientToEdit(null)}
+        />
+      )}
     </div>
   );
 };

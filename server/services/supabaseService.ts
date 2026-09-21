@@ -482,8 +482,16 @@ export class SupabaseService {
       throw err;
     }
 
-    const { data: credits } = await supabase.from('credits').select('amount').eq('client_id', clientId);
-    const { data: payments } = await supabase.from('payments').select('amount').eq('client_id', clientId);
+    const { data: credits } = await supabase
+      .from('credits')
+      .select('amount')
+      .eq('user_id', userId)
+      .eq('client_id', clientId);
+    const { data: payments } = await supabase
+      .from('payments')
+      .select('amount')
+      .eq('user_id', userId)
+      .eq('client_id', clientId);
 
     const totCr = (credits || []).reduce((s, c) => s + Number(c.amount), 0);
     const totPy = (payments || []).reduce((s, p) => s + Number(p.amount), 0);
@@ -546,5 +554,139 @@ export class SupabaseService {
 
     if (error) throw new Error(`Supabase update error: ${error.message}`);
     return data;
+  }
+
+  /**
+   * Update client details in Supabase
+   */
+  static async updateClient(userId: string, clientId: string, data: { firstName?: string; lastName?: string; phone?: string }) {
+    const supabase = getSupabaseClient();
+    if (!supabase) throw new Error('Supabase client unavailable');
+
+    const updatePayload: any = { updated_at: new Date().toISOString() };
+    if (data.firstName) updatePayload.first_name = data.firstName.trim();
+    if (data.lastName) updatePayload.last_name = data.lastName.trim();
+    if (data.phone) {
+      const normalized = normalizePhone(data.phone);
+      if (normalized) updatePayload.phone = normalized;
+    }
+
+    const { data: updated, error } = await supabase
+      .from('clients')
+      .update(updatePayload)
+      .eq('id', clientId)
+      .eq('user_id', userId)
+      .select()
+      .single();
+
+    if (error) throw new Error(`Supabase client update error: ${error.message}`);
+    return this.getClientSummary(userId, clientId);
+  }
+
+  /**
+   * Delete / Deactivate client in Supabase
+   */
+  static async deleteClient(userId: string, clientId: string) {
+    const supabase = getSupabaseClient();
+    if (!supabase) throw new Error('Supabase client unavailable');
+
+    const summary = await this.getClientSummary(userId, clientId);
+    if (!summary) throw new Error('Client introuvable.');
+    if (summary.balance > 0) {
+      const err: any = new Error(`Impossible de désactiver un client ayant encore une dette active de ${summary.balance} FCFA.`);
+      err.code = 'CANNOT_DELETE_ACTIVE_DEBT';
+      throw err;
+    }
+
+    const { error } = await supabase
+      .from('clients')
+      .update({ is_active: false, updated_at: new Date().toISOString() })
+      .eq('id', clientId)
+      .eq('user_id', userId);
+
+    if (error) throw new Error(`Supabase client delete error: ${error.message}`);
+    return { success: true };
+  }
+
+  /**
+   * Update credit in Supabase
+   */
+  static async updateCredit(userId: string, creditId: string, data: { amount?: number; dueDate?: string; description?: string }) {
+    const supabase = getSupabaseClient();
+    if (!supabase) throw new Error('Supabase client unavailable');
+
+    const updatePayload: any = { updated_at: new Date().toISOString() };
+    if (data.amount !== undefined) updatePayload.amount = Math.round(Number(data.amount));
+    if (data.dueDate) updatePayload.due_date = data.dueDate;
+    if (data.description !== undefined) updatePayload.description = data.description;
+
+    const { data: updated, error } = await supabase
+      .from('credits')
+      .update(updatePayload)
+      .eq('id', creditId)
+      .eq('user_id', userId)
+      .select()
+      .single();
+
+    if (error) throw new Error(`Supabase credit update error: ${error.message}`);
+    return updated;
+  }
+
+  /**
+   * Delete credit in Supabase
+   */
+  static async deleteCredit(userId: string, creditId: string) {
+    const supabase = getSupabaseClient();
+    if (!supabase) throw new Error('Supabase client unavailable');
+
+    const { error } = await supabase
+      .from('credits')
+      .delete()
+      .eq('id', creditId)
+      .eq('user_id', userId);
+
+    if (error) throw new Error(`Supabase credit delete error: ${error.message}`);
+    return { success: true };
+  }
+
+  /**
+   * Update payment in Supabase
+   */
+  static async updatePayment(userId: string, paymentId: string, data: { amount?: number; notes?: string; paymentDate?: string }) {
+    const supabase = getSupabaseClient();
+    if (!supabase) throw new Error('Supabase client unavailable');
+
+    const updatePayload: any = {};
+    if (data.amount !== undefined) updatePayload.amount = Math.round(Number(data.amount));
+    if (data.notes !== undefined) updatePayload.notes = data.notes;
+    if (data.paymentDate) updatePayload.payment_date = data.paymentDate;
+
+    const { data: updated, error } = await supabase
+      .from('payments')
+      .update(updatePayload)
+      .eq('id', paymentId)
+      .eq('user_id', userId)
+      .select()
+      .single();
+
+    if (error) throw new Error(`Supabase payment update error: ${error.message}`);
+    return updated;
+  }
+
+  /**
+   * Delete payment in Supabase
+   */
+  static async deletePayment(userId: string, paymentId: string) {
+    const supabase = getSupabaseClient();
+    if (!supabase) throw new Error('Supabase client unavailable');
+
+    const { error } = await supabase
+      .from('payments')
+      .delete()
+      .eq('id', paymentId)
+      .eq('user_id', userId);
+
+    if (error) throw new Error(`Supabase payment delete error: ${error.message}`);
+    return { success: true };
   }
 }

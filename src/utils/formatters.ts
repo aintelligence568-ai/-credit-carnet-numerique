@@ -87,31 +87,3 @@ export const formatDueDateRelative = (
     };
   }
 };
-
-export const formatCurrentMonth = (lang: 'fr' | 'ar' = 'fr'): string => {
-  const now = new Date();
-  if (lang === 'ar') {
-    return now.toLocaleDateString('ar', { month: 'long', year: 'numeric' });
-  }
-  const formatted = now.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
-  return formatted.charAt(0).toUpperCase() + formatted.slice(1);
-};
-
-export const formatTodayDate = (lang: 'fr' | 'ar' = 'fr'): string => {
-  const now = new Date();
-  if (lang === 'ar') {
-    return now.toLocaleDateString('ar', {
-      weekday: 'long',
-      day: 'numeric',
-      month: 'long',
-      year: 'numeric',
-    });
-  }
-  const formatted = now.toLocaleDateString('fr-FR', {
-    weekday: 'long',
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric',
-  });
-  return formatted.charAt(0).toUpperCase() + formatted.slice(1);
-};

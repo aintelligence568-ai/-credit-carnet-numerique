@@ -846,15 +846,21 @@ ALTER TABLE public.idempotency_keys ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "Users can manage own profile" ON public.users;
 CREATE POLICY "Users can manage own profile" ON public.users
-  FOR ALL USING (auth.uid()::text = id OR current_setting('role') = 'service_role');
+  FOR ALL
+  USING (auth.uid()::text = id OR current_setting('role') = 'service_role')
+  WITH CHECK (auth.uid()::text = id OR current_setting('role') = 'service_role');
 
 DROP POLICY IF EXISTS "Users can manage own clients" ON public.clients;
 CREATE POLICY "Users can manage own clients" ON public.clients
-  FOR ALL USING (auth.uid()::text = user_id OR current_setting('role') = 'service_role');
+  FOR ALL
+  USING (auth.uid()::text = user_id OR current_setting('role') = 'service_role')
+  WITH CHECK (auth.uid()::text = user_id OR current_setting('role') = 'service_role');
 
 DROP POLICY IF EXISTS "Users can manage own credits" ON public.credits;
 CREATE POLICY "Users can manage own credits" ON public.credits
-  FOR ALL USING (auth.uid()::text = user_id OR current_setting('role') = 'service_role');
+  FOR ALL
+  USING (auth.uid()::text = user_id OR current_setting('role') = 'service_role')
+  WITH CHECK (auth.uid()::text = user_id OR current_setting('role') = 'service_role');
 
 DROP POLICY IF EXISTS "Users can manage own credit items" ON public.credit_items;
 CREATE POLICY "Users can manage own credit items" ON public.credit_items

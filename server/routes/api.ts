@@ -421,7 +421,9 @@ function isTableMissingError(err: any): boolean {
  */
 apiRouter.get('/cockpit/stats', async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const stats = CreditService.getCockpitStats(req.userId!);
+    const stats = isSupabaseConfigured()
+      ? await SupabaseService.getCockpitStats(req.userId!)
+      : CreditService.getCockpitStats(req.userId!);
     res.json(stats);
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Erreur serveur.' });
@@ -435,7 +437,9 @@ apiRouter.get('/cockpit/stats', async (req: AuthenticatedRequest, res: Response)
 apiRouter.get('/clients', async (req: AuthenticatedRequest, res: Response) => {
   try {
     const search = req.query.q as string | undefined;
-    const clients = CreditService.listClients(req.userId!, search);
+    const clients = isSupabaseConfigured()
+      ? await SupabaseService.listClients(req.userId!, search)
+      : CreditService.listClients(req.userId!, search);
     res.json(clients);
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Erreur serveur.' });
@@ -448,7 +452,9 @@ apiRouter.get('/clients', async (req: AuthenticatedRequest, res: Response) => {
  */
 apiRouter.get('/clients/:id', async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const client = CreditService.getClientSummary(req.userId!, req.params.id);
+    const client = isSupabaseConfigured()
+      ? await SupabaseService.getClientSummary(req.userId!, req.params.id)
+      : CreditService.getClientSummary(req.userId!, req.params.id);
     if (!client) {
       return res.status(404).json({ error: 'Client introuvable.', code: 'NOT_FOUND' });
     }
@@ -464,7 +470,9 @@ apiRouter.get('/clients/:id', async (req: AuthenticatedRequest, res: Response) =
  */
 apiRouter.get('/clients/:id/credits', async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const credits = CreditService.getClientCredits(req.userId!, req.params.id);
+    const credits = isSupabaseConfigured()
+      ? await SupabaseService.getClientCredits(req.userId!, req.params.id)
+      : CreditService.getClientCredits(req.userId!, req.params.id);
     res.json(credits);
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Erreur serveur.' });
@@ -477,7 +485,9 @@ apiRouter.get('/clients/:id/credits', async (req: AuthenticatedRequest, res: Res
  */
 apiRouter.get('/clients/:id/payments', async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const payments = CreditService.getClientPayments(req.userId!, req.params.id);
+    const payments = isSupabaseConfigured()
+      ? await SupabaseService.getClientPayments(req.userId!, req.params.id)
+      : CreditService.getClientPayments(req.userId!, req.params.id);
     res.json(payments);
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Erreur serveur.' });
@@ -491,7 +501,9 @@ apiRouter.get('/clients/:id/payments', async (req: AuthenticatedRequest, res: Re
 apiRouter.post('/clients', async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { firstName, lastName, phone } = req.body;
-    const client = CreditService.createClient(req.userId!, firstName, lastName, phone);
+    const client = isSupabaseConfigured()
+      ? await SupabaseService.createClient(req.userId!, firstName, lastName, phone)
+      : CreditService.createClient(req.userId!, firstName, lastName, phone);
     res.status(201).json(client);
   } catch (error: any) {
     const status = error.code === 'PHONE_ALREADY_EXISTS' ? 409 : 400;
@@ -510,7 +522,9 @@ apiRouter.post('/clients', async (req: AuthenticatedRequest, res: Response) => {
 apiRouter.patch('/clients/:id', async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { firstName, lastName, phone } = req.body;
-    const client = CreditService.updateClient(req.userId!, req.params.id, { firstName, lastName, phone });
+    const client = isSupabaseConfigured()
+      ? await SupabaseService.updateClient(req.userId!, req.params.id, { firstName, lastName, phone })
+      : CreditService.updateClient(req.userId!, req.params.id, { firstName, lastName, phone });
     res.json(client);
   } catch (error: any) {
     const status = error.code === 'CLIENT_NOT_FOUND' ? 404 : error.code === 'PHONE_ALREADY_EXISTS' ? 409 : 400;
@@ -535,7 +549,9 @@ apiRouter.patch('/clients/:id/credit-status', async (req: AuthenticatedRequest, 
       });
     }
 
-    const updated = CreditService.updateClientCreditStatus(req.userId!, req.params.id, creditStatus);
+    const updated = isSupabaseConfigured()
+      ? await SupabaseService.setClientCreditStatus(req.userId!, req.params.id, creditStatus)
+      : CreditService.updateClientCreditStatus(req.userId!, req.params.id, creditStatus);
     res.json(updated);
   } catch (error: any) {
     const status = error.code === 'CLIENT_NOT_FOUND' ? 404 : 400;
@@ -550,9 +566,11 @@ apiRouter.patch('/clients/:id/credit-status', async (req: AuthenticatedRequest, 
  * DELETE /api/clients/:id
  * Soft delete client (strictly forbidden if client has active debt)
  */
-apiRouter.delete('/clients/:id', (req: AuthenticatedRequest, res: Response) => {
+apiRouter.delete('/clients/:id', async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const result = CreditService.deleteClient(req.userId!, req.params.id);
+    const result = isSupabaseConfigured()
+      ? await SupabaseService.deleteClient(req.userId!, req.params.id)
+      : CreditService.deleteClient(req.userId!, req.params.id);
     res.json(result);
   } catch (error: any) {
     const status = error.code === 'CANNOT_DELETE_ACTIVE_DEBT' ? 422 : 400;
@@ -579,16 +597,27 @@ apiRouter.post('/credits', async (req: AuthenticatedRequest, res: Response) => {
       });
     }
 
-    const result = CreditService.createCredit(
-      req.userId!,
-      clientId,
-      Number(amount),
-      dueDate,
-      entryMode === 'DETAILED' ? 'DETAILED' : 'EXPRESS',
-      description,
-      items,
-      Boolean(forceOverride)
-    );
+    const result = isSupabaseConfigured()
+      ? await SupabaseService.createCredit(
+          req.userId!,
+          clientId,
+          Number(amount),
+          dueDate,
+          entryMode === 'DETAILED' ? 'DETAILED' : 'EXPRESS',
+          description,
+          items,
+          Boolean(forceOverride)
+        )
+      : CreditService.createCredit(
+          req.userId!,
+          clientId,
+          Number(amount),
+          dueDate,
+          entryMode === 'DETAILED' ? 'DETAILED' : 'EXPRESS',
+          description,
+          items,
+          Boolean(forceOverride)
+        );
 
     res.status(201).json(result);
   } catch (error: any) {
@@ -614,7 +643,9 @@ apiRouter.post('/credits', async (req: AuthenticatedRequest, res: Response) => {
 apiRouter.patch('/credits/:id', async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { amount, dueDate, description } = req.body;
-    const result = CreditService.updateCredit(req.userId!, req.params.id, { amount, dueDate, description });
+    const result = isSupabaseConfigured()
+      ? await SupabaseService.updateCredit(req.userId!, req.params.id, { amount, dueDate, description })
+      : CreditService.updateCredit(req.userId!, req.params.id, { amount, dueDate, description });
     res.json(result);
   } catch (error: any) {
     const status = error.code === 'CREDIT_NOT_FOUND' ? 404 : error.code === 'CREDIT_LOWER_THAN_PAYMENTS' ? 422 : 400;
@@ -631,7 +662,9 @@ apiRouter.patch('/credits/:id', async (req: AuthenticatedRequest, res: Response)
  */
 apiRouter.delete('/credits/:id', async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const result = CreditService.deleteCredit(req.userId!, req.params.id);
+    const result = isSupabaseConfigured()
+      ? await SupabaseService.deleteCredit(req.userId!, req.params.id)
+      : CreditService.deleteCredit(req.userId!, req.params.id);
     res.json(result);
   } catch (error: any) {
     const status = error.code === 'CREDIT_NOT_FOUND' ? 404 : error.code === 'CANNOT_DELETE_CREDIT_PAYMENT_EXCEEDS' ? 422 : 400;
@@ -666,14 +699,16 @@ apiRouter.post('/payments', async (req: AuthenticatedRequest, res: Response) => 
     // Use caller-provided idempotency key or generate controlled key if omitted
     const idempotencyKey = rawKey ? String(rawKey).trim() : `auto-${crypto.randomUUID()}`;
 
-    const result = CreditService.createPayment(
-      req.userId!,
-      clientId,
-      Number(amount),
-      notes,
-      creditId || null,
-      idempotencyKey
-    );
+    const result = isSupabaseConfigured()
+      ? await SupabaseService.createPayment(req.userId!, clientId, Number(amount), notes, creditId || null)
+      : CreditService.createPayment(
+          req.userId!,
+          clientId,
+          Number(amount),
+          notes,
+          creditId || null,
+          idempotencyKey
+        );
 
     if (result.isIdempotentReplay) {
       res.setHeader('X-Idempotent-Replay', 'true');
@@ -709,7 +744,9 @@ apiRouter.post('/payments', async (req: AuthenticatedRequest, res: Response) => 
 apiRouter.patch('/payments/:id', async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { amount, notes, paymentDate } = req.body;
-    const result = CreditService.updatePayment(req.userId!, req.params.id, { amount, notes, paymentDate });
+    const result = isSupabaseConfigured()
+      ? await SupabaseService.updatePayment(req.userId!, req.params.id, { amount, notes, paymentDate })
+      : CreditService.updatePayment(req.userId!, req.params.id, { amount, notes, paymentDate });
     res.json(result);
   } catch (error: any) {
     const status = error.code === 'PAYMENT_NOT_FOUND' ? 404 : error.code === 'PAYMENT_EXCEEDS_BALANCE' ? 422 : 400;
@@ -726,7 +763,9 @@ apiRouter.patch('/payments/:id', async (req: AuthenticatedRequest, res: Response
  */
 apiRouter.delete('/payments/:id', async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const result = CreditService.deletePayment(req.userId!, req.params.id);
+    const result = isSupabaseConfigured()
+      ? await SupabaseService.deletePayment(req.userId!, req.params.id)
+      : CreditService.deletePayment(req.userId!, req.params.id);
     res.json(result);
   } catch (error: any) {
     const status = error.code === 'PAYMENT_NOT_FOUND' ? 404 : 400;

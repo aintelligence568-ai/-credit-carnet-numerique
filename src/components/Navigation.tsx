@@ -27,7 +27,7 @@ export const Navigation: React.FC<NavigationProps> = ({
           id="nav-tab-accueil"
           onClick={() => onSelectTab('accueil')}
           className={`flex-1 flex flex-col items-center justify-center py-1 transition ${
-            activeTab === 'accueil' ? 'text-emerald-700 font-bold' : 'text-slate-500 hover:text-slate-800'
+            activeTab === 'accueil' ? 'text-teal-700 font-bold' : 'text-slate-500 hover:text-slate-800'
           }`}
         >
           <div className="relative">
@@ -58,7 +58,7 @@ export const Navigation: React.FC<NavigationProps> = ({
           <button
             id="nav-btn-new-credit"
             onClick={onOpenNewCredit}
-            className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white px-4 py-2.5 rounded-full shadow-lg shadow-emerald-700/30 font-bold text-sm transition"
+            className="flex items-center gap-1.5 bg-teal-700 hover:bg-teal-800 active:scale-95 text-white px-4 py-2.5 rounded-full shadow-lg shadow-teal-900/25 font-bold text-sm transition"
           >
             <Plus className="w-5 h-5 shrink-0" />
             <span>{t.nav_new_credit}</span>

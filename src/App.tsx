@@ -57,7 +57,7 @@ function MainApp() {
   };
 
   return (
-    <div className="h-full h-[100dvh] w-full bg-slate-100 sm:bg-slate-200/80 sm:p-3 md:p-6 flex items-center justify-center font-sans antialiased overflow-hidden selection:bg-emerald-500 selection:text-white">
+    <div className="h-full h-[100dvh] w-full bg-slate-100 sm:bg-slate-200/80 sm:p-3 md:p-6 flex items-center justify-center font-sans antialiased overflow-hidden selection:bg-teal-600 selection:text-white">
       {/* Responsive App Container */}
       <div
         dir={dir}

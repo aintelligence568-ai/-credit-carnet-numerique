@@ -1,5 +1,5 @@
 import React from 'react';
-import { Home, Users, BarChart3, Plus } from 'lucide-react';
+import { Home, Users, BarChart3 } from 'lucide-react';
 import { useLanguage } from '../context/LanguageContext';
 
 export type ActiveTab = 'accueil' | 'clients' | 'suivi';
@@ -52,18 +52,6 @@ export const Navigation: React.FC<NavigationProps> = ({
           <Users className="w-5 h-5" />
           <span className="text-[11px] mt-1">{t.nav_clients}</span>
         </button>
-
-        {/* Center Action: + Crédit */}
-        <div className="flex-none px-2 -mt-5">
-          <button
-            id="nav-btn-new-credit"
-            onClick={onOpenNewCredit}
-            className="flex items-center gap-1.5 bg-teal-700 hover:bg-teal-800 active:scale-95 text-white px-4 py-2.5 rounded-full shadow-lg shadow-teal-900/25 font-bold text-sm transition"
-          >
-            <Plus className="w-5 h-5 shrink-0" />
-            <span>{t.nav_new_credit}</span>
-          </button>
-        </div>
 
         {/* Tab 3: Suivi */}
         <button

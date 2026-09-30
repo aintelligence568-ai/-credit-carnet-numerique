@@ -455,7 +455,8 @@ export class SupabaseService {
     clientId: string,
     amount: number,
     notes?: string,
-    creditId?: string | null
+    creditId?: string | null,
+    idempotencyKey?: string | null
   ) {
     const supabase = getSupabaseClient();
     if (!supabase) throw new Error('Supabase client unavailable');
@@ -467,73 +468,45 @@ export class SupabaseService {
       throw err;
     }
 
-    // Check client & current balance
-    const { data: client, error: clErr } = await supabase
-      .from('clients')
-      .select('*')
-      .eq('id', clientId)
-      .eq('user_id', userId)
-      .eq('is_active', true)
-      .maybeSingle();
-
-    if (clErr || !client) {
-      const err: any = new Error('Client introuvable ou inactif.');
-      err.code = 'CLIENT_NOT_FOUND';
-      throw err;
-    }
-
-    const { data: credits } = await supabase
-      .from('credits')
-      .select('amount')
-      .eq('user_id', userId)
-      .eq('client_id', clientId);
-    const { data: payments } = await supabase
-      .from('payments')
-      .select('amount')
-      .eq('user_id', userId)
-      .eq('client_id', clientId);
-
-    const totCr = (credits || []).reduce((s, c) => s + Number(c.amount), 0);
-    const totPy = (payments || []).reduce((s, p) => s + Number(p.amount), 0);
-    const currentBalance = Math.max(0, totCr - totPy);
-
-    if (intAmount > currentBalance) {
-      const err: any = new Error(
-        `Le montant payé (${intAmount} FCFA) dépasse le solde restant dû (${currentBalance} FCFA). Le solde ne peut pas être négatif.`
-      );
-      err.code = 'PAYMENT_EXCEEDS_BALANCE';
-      err.details = { currentBalance, attemptedAmount: intAmount };
-      throw err;
-    }
-
-    const payId = `pay-${crypto.randomUUID()}`;
-    const today = new Date().toISOString().slice(0, 10);
-
-    const { error: payErr } = await supabase.from('payments').insert({
-      id: payId,
-      user_id: userId,
-      client_id: clientId,
-      credit_id: creditId || null,
-      amount: intAmount,
-      payment_date: today,
-      notes: notes || null,
+    const { data: rpcResponse, error: rpcError } = await supabase.rpc('fn_record_payment', {
+      p_user_id: userId,
+      p_client_id: clientId,
+      p_amount: intAmount,
+      p_idempotency_key: idempotencyKey || null,
+      p_notes: notes || null,
+      p_credit_id: creditId || null,
+      p_payment_date: new Date().toISOString().slice(0, 10),
     });
 
-    if (payErr) throw new Error(`Supabase payment insert error: ${payErr.message}`);
+    if (rpcError) {
+      const err: any = new Error(rpcError.message);
+      if (rpcError.message.includes('PAYMENT_EXCEEDS_BALANCE')) err.code = 'PAYMENT_EXCEEDS_BALANCE';
+      if (rpcError.message.includes('CLIENT_NOT_FOUND')) err.code = 'CLIENT_NOT_FOUND';
+      throw err;
+    }
 
-    const newBalance = currentBalance - intAmount;
+    const payload = rpcResponse?.data ?? rpcResponse;
+    if (rpcResponse?.status === 'REPLAY') {
+      return {
+        paymentId: payload?.payment_id,
+        newBalance: payload?.new_balance,
+        isSettled: payload?.is_settled,
+        isIdempotentReplay: true,
+      };
+    }
 
     return {
+      paymentId: payload.payment_id,
       payment: {
-        id: payId,
-        userId,
-        clientId,
-        amount: intAmount,
-        paymentDate: today,
-        notes,
+        id: payload.payment_id,
+        userId: payload.user_id,
+        clientId: payload.client_id,
+        amount: Number(payload.amount),
+        paymentDate: payload.payment_date,
+        notes: payload.notes || undefined,
       },
-      newBalance,
-      isSettled: newBalance === 0,
+      newBalance: Number(payload.new_balance),
+      isSettled: Boolean(payload.is_settled),
     };
   }
 

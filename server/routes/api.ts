@@ -212,39 +212,6 @@ apiRouter.post('/api/auth/quick-demo', async (_req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-apiRouter.post('/auth/quick-demo', async (_req, res) => {
-  try {
-    const user = db.prepare(`
-      SELECT id, phone, full_name, shop_name, pin
-      FROM users
-      WHERE id = ?
-    `).get(DEFAULT_USER_ID) as any;
-
-    if (!user) {
-      return res.status(404).json({ error: 'Compte de démonstration introuvable.' });
-    }
-
-    const token = generateAuthToken({
-      id: user.id,
-      phone: user.phone,
-      fullName: user.full_name,
-      shopName: user.shop_name,
-    });
-
-    res.json({
-      token,
-      user: {
-        id: user.id,
-        phone: user.phone,
-        fullName: user.full_name,
-        shopName: user.shop_name,
-      },
-    });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
 // Apply auth middleware to all subsequent API endpoints
 apiRouter.use(authenticateUser);
 
@@ -700,7 +667,7 @@ apiRouter.post('/payments', async (req: AuthenticatedRequest, res: Response) => 
     const idempotencyKey = rawKey ? String(rawKey).trim() : `auto-${crypto.randomUUID()}`;
 
     const result = isSupabaseConfigured()
-      ? await SupabaseService.createPayment(req.userId!, clientId, Number(amount), notes, creditId || null)
+      ? await SupabaseService.createPayment(req.userId!, clientId, Number(amount), notes, creditId || null, idempotencyKey)
       : CreditService.createPayment(
           req.userId!,
           clientId,

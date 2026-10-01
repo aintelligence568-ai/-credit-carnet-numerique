@@ -108,7 +108,9 @@ CREATE INDEX IF NOT EXISTS idx_idempotency_user ON public.idempotency_keys(user_
 -- 2. VUE D'AGRÉGATION FINANCIÈRE DES CLIENTS
 -- ====================================================================
 
-CREATE OR REPLACE VIEW public.v_client_balances AS
+CREATE OR REPLACE VIEW public.v_client_balances
+WITH (security_invoker = true)
+AS
 SELECT
   c.id AS client_id,
   c.user_id,
@@ -846,36 +848,67 @@ ALTER TABLE public.idempotency_keys ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "Users can manage own profile" ON public.users;
 CREATE POLICY "Users can manage own profile" ON public.users
-  FOR ALL
-  USING (auth.uid()::text = id OR current_setting('role') = 'service_role')
-  WITH CHECK (auth.uid()::text = id OR current_setting('role') = 'service_role');
+  FOR ALL TO authenticated
+  USING ((select auth.uid())::text = id)
+  WITH CHECK ((select auth.uid())::text = id);
 
 DROP POLICY IF EXISTS "Users can manage own clients" ON public.clients;
 CREATE POLICY "Users can manage own clients" ON public.clients
-  FOR ALL
-  USING (auth.uid()::text = user_id OR current_setting('role') = 'service_role')
-  WITH CHECK (auth.uid()::text = user_id OR current_setting('role') = 'service_role');
+  FOR ALL TO authenticated
+  USING ((select auth.uid())::text = user_id)
+  WITH CHECK ((select auth.uid())::text = user_id);
 
 DROP POLICY IF EXISTS "Users can manage own credits" ON public.credits;
 CREATE POLICY "Users can manage own credits" ON public.credits
-  FOR ALL
-  USING (auth.uid()::text = user_id OR current_setting('role') = 'service_role')
-  WITH CHECK (auth.uid()::text = user_id OR current_setting('role') = 'service_role');
+  FOR ALL TO authenticated
+  USING ((select auth.uid())::text = user_id)
+  WITH CHECK ((select auth.uid())::text = user_id);
 
 DROP POLICY IF EXISTS "Users can manage own credit items" ON public.credit_items;
 CREATE POLICY "Users can manage own credit items" ON public.credit_items
-  FOR ALL USING (
+  FOR ALL TO authenticated
+  USING (
     EXISTS (
       SELECT 1 FROM public.credits c
       WHERE c.id = credit_items.credit_id
-      AND (c.user_id = auth.uid()::text OR current_setting('role') = 'service_role')
+        AND c.user_id = (select auth.uid())::text
+    )
+  )
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM public.credits c
+      WHERE c.id = credit_items.credit_id
+        AND c.user_id = (select auth.uid())::text
     )
   );
 
 DROP POLICY IF EXISTS "Users can manage own payments" ON public.payments;
 CREATE POLICY "Users can manage own payments" ON public.payments
-  FOR ALL USING (auth.uid()::text = user_id OR current_setting('role') = 'service_role');
+  FOR ALL TO authenticated
+  USING ((select auth.uid())::text = user_id)
+  WITH CHECK ((select auth.uid())::text = user_id);
 
 DROP POLICY IF EXISTS "Users can manage own idempotency" ON public.idempotency_keys;
 CREATE POLICY "Users can manage own idempotency" ON public.idempotency_keys
-  FOR ALL USING (auth.uid()::text = user_id OR current_setting('role') = 'service_role');
+  FOR ALL TO authenticated
+  USING ((select auth.uid())::text = user_id)
+  WITH CHECK ((select auth.uid())::text = user_id);
+
+-- Les opérations métier privilégiées sont appelées uniquement par le backend
+-- avec la clé service_role ; elles ne constituent pas une API publique.
+REVOKE ALL ON FUNCTION public.fn_record_payment(TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT, DATE) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.fn_record_credit_simple(TEXT, TEXT, BIGINT, DATE, TEXT, BOOLEAN, DATE) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.fn_record_credit_detailed(TEXT, TEXT, BIGINT, DATE, JSONB, TEXT, BOOLEAN, DATE) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.fn_update_credit(TEXT, TEXT, BIGINT, DATE, TEXT) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.fn_delete_credit(TEXT, TEXT) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.fn_update_payment(TEXT, TEXT, BIGINT, DATE, TEXT) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.fn_delete_payment(TEXT, TEXT) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.fn_delete_client_safe(TEXT, TEXT) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.fn_record_payment(TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT, DATE) TO service_role;
+GRANT EXECUTE ON FUNCTION public.fn_record_credit_simple(TEXT, TEXT, BIGINT, DATE, TEXT, BOOLEAN, DATE) TO service_role;
+GRANT EXECUTE ON FUNCTION public.fn_record_credit_detailed(TEXT, TEXT, BIGINT, DATE, JSONB, TEXT, BOOLEAN, DATE) TO service_role;
+GRANT EXECUTE ON FUNCTION public.fn_update_credit(TEXT, TEXT, BIGINT, DATE, TEXT) TO service_role;
+GRANT EXECUTE ON FUNCTION public.fn_delete_credit(TEXT, TEXT) TO service_role;
+GRANT EXECUTE ON FUNCTION public.fn_update_payment(TEXT, TEXT, BIGINT, DATE, TEXT) TO service_role;
+GRANT EXECUTE ON FUNCTION public.fn_delete_payment(TEXT, TEXT) TO service_role;
+GRANT EXECUTE ON FUNCTION public.fn_delete_client_safe(TEXT, TEXT) TO service_role;

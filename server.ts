@@ -6,6 +6,13 @@ import { initializeDatabase, seedCheikhInitialData } from './server/db';
 import { apiRouter } from './server/routes/api';
 
 async function startServer() {
+  if (process.env.NODE_ENV === 'production') {
+    const { isSupabaseConfigured } = await import('./server/supabase');
+    if (!isSupabaseConfigured()) {
+      throw new Error('[CRITICAL_CONFIG] Supabase configuration is mandatory in production mode.');
+    }
+  }
+
   // Initialize database tables & seed data for Cheikh
   initializeDatabase();
   seedCheikhInitialData();

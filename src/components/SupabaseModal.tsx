@@ -104,8 +104,8 @@ export const SupabaseModal: React.FC<SupabaseModalProps> = ({ isOpen, onClose })
                   {status?.isConfigured
                     ? `${language === 'ar' ? 'متصل بقاعدة Supabase :' : "Connecté à l'instance Supabase :"} ${status.url}`
                     : (language === 'ar'
-                      ? 'مفاتيح SUPABASE_URL و SUPABASE_SERVICE_ROLE_KEY (أو SUPABASE_ANON_KEY) غير محددة بعد في أسرار البيئة. التطبيق يعمل حالياً بمحرك SQLite المحلي المدمج.'
-                      : 'Les clés SUPABASE_URL et SUPABASE_SERVICE_ROLE_KEY (ou SUPABASE_ANON_KEY) n’ont pas encore été renseignées dans les secrets de l’environnement. Le prototype fonctionne actuellement avec son moteur SQLite intégré.')}
+                      ? 'لم يتم بعد إعداد عنوان Supabase ومفتاح الخادم في أسرار البيئة. التطبيق يعمل حالياً بمحرك SQLite المحلي المدمج.'
+                      : 'L’URL Supabase et la clé serveur Supabase n’ont pas encore été renseignées dans les secrets de l’environnement. Le prototype fonctionne actuellement avec son moteur SQLite intégré.')}
                 </p>
                 {status?.isConfigured && (
                   <button
@@ -161,7 +161,7 @@ export const SupabaseModal: React.FC<SupabaseModalProps> = ({ isOpen, onClose })
                 <span className="font-medium text-slate-900">
                   {language === 'ar' ? 'أضف المتغيرات' : 'Configurez vos variables'}
                 </span>{' '}
-                <code>SUPABASE_URL</code> {language === 'ar' ? 'و' : 'et'} <code>SUPABASE_SERVICE_ROLE_KEY</code>{' '}
+                <code>SUPABASE_URL</code> {language === 'ar' ? 'و' : 'et'} <span>la clé serveur Supabase</span>{' '}
                 {language === 'ar'
                   ? 'في إعدادات أسرار البيئة Settings > Secrets.'
                   : 'dans le menu Settings > Secrets de Google AI Studio.'}

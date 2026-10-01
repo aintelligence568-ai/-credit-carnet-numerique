@@ -749,6 +749,13 @@ apiRouter.delete('/payments/:id', async (req: AuthenticatedRequest, res: Respons
  */
 apiRouter.post('/test/reset', (req: AuthenticatedRequest, res: Response) => {
   try {
+    if (isSupabaseConfigured()) {
+      return res.status(409).json({
+        error: 'La réinitialisation de test est disponible uniquement avec le moteur SQLite local.',
+        code: 'SQLITE_TEST_ONLY',
+      });
+    }
+
     if (req.userId === DEFAULT_USER_ID) {
       seedCheikhInitialData(true);
       res.json({ message: 'Données de Cheikh réinitialisées avec succès aux 5 profils étalons.' });

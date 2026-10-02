@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import crypto from 'node:crypto';
 import { CreditService } from '../services/creditService';
 import { SupabaseService } from '../services/supabaseService';
-import { AuthenticatedRequest, authenticateUser, generateAuthToken, DEFAULT_USER_ID, verifyPin, hashPin } from '../auth';
+import { AuthenticatedRequest, authenticateUser, generateAuthToken, DEFAULT_USER_ID, verifyPin, hashPin, ensureSupabaseAuthUser, signInWithSupabase } from '../auth';
 import { db, normalizePhone, seedCheikhInitialData } from '../db';
 import { isSupabaseConfigured, getSupabaseConfigInfo, getSupabaseClient } from '../supabase';
 import fs from 'node:fs';
@@ -40,45 +40,25 @@ apiRouter.post('/auth/login', async (req, res) => {
       });
     }
 
-    // Lookup user in SQLite
-    const user = db.prepare(`
-      SELECT id, phone, full_name, shop_name, pin
-      FROM users
-      WHERE phone = ?
-    `).get(cleanPhone) as any;
-
-    if (!user) {
-      return res.status(401).json({
-        error: 'Aucun compte trouvé avec ce numéro de téléphone.',
-        code: 'USER_NOT_FOUND',
-      });
+    if (!isSupabaseConfigured()) {
+      return res.status(503).json({ error: 'Supabase Auth est obligatoire. Configuration indisponible.', code: 'SUPABASE_REQUIRED' });
     }
+    const supabase = getSupabaseClient();
+    if (!supabase) throw new Error('Supabase Auth est indisponible.');
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id, phone, name, store_name, pin')
+      .eq('phone', cleanPhone)
+      .maybeSingle();
+    if (userError) throw userError;
+    if (!user) return res.status(401).json({ error: 'Aucun compte trouvé avec ce numéro de téléphone.', code: 'USER_NOT_FOUND' });
 
-    // Compare PIN with timing attack protection & scrypt hash support
     const trimmedPin = String(pin).trim();
-    if (!verifyPin(trimmedPin, user.pin)) {
-      return res.status(401).json({
-        error: 'Code PIN incorrect. Veuillez réessayer.',
-        code: 'INVALID_PIN',
-      });
-    }
-
-    const token = generateAuthToken({
-      id: user.id,
-      phone: user.phone,
-      fullName: user.full_name,
-      shopName: user.shop_name,
-    });
-
-    res.json({
-      token,
-      user: {
-        id: user.id,
-        phone: user.phone,
-        fullName: user.full_name,
-        shopName: user.shop_name,
-      },
-    });
+    if (!verifyPin(trimmedPin, user.pin)) return res.status(401).json({ error: 'Code PIN incorrect. Veuillez réessayer.', code: 'INVALID_PIN' });
+    await ensureSupabaseAuthUser(user.phone, trimmedPin, { id: user.id, fullName: user.name, shopName: user.store_name });
+    const session = await signInWithSupabase(user.phone, trimmedPin);
+    if (!session) return res.status(401).json({ error: 'Connexion Supabase Auth impossible.', code: 'AUTH_FAILED' });
+    res.json({ token: session.accessToken, user: { id: user.id, phone: user.phone, fullName: user.name, shopName: user.store_name } });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Erreur lors de la connexion.' });
   }
@@ -116,61 +96,22 @@ apiRouter.post('/auth/register', async (req, res) => {
       });
     }
 
-    // Check uniqueness
-    const existing = db.prepare('SELECT id FROM users WHERE phone = ?').get(cleanPhone);
-    if (existing) {
-      return res.status(409).json({
-        error: 'Un compte avec ce numéro de téléphone existe déjà. Veuillez vous connecter.',
-        code: 'PHONE_EXISTS',
-      });
-    }
+    if (!isSupabaseConfigured()) return res.status(503).json({ error: 'Supabase Auth est obligatoire. Configuration indisponible.', code: 'SUPABASE_REQUIRED' });
+    const supabase = getSupabaseClient();
+    if (!supabase) throw new Error('Supabase indisponible.');
+    const { data: existing } = await supabase.from('users').select('id').eq('phone', cleanPhone).maybeSingle();
+    if (existing) return res.status(409).json({ error: 'Un compte avec ce numéro de téléphone existe déjà. Veuillez vous connecter.', code: 'PHONE_EXISTS' });
 
     const newUserId = `user-${crypto.randomUUID()}`;
     const now = new Date().toISOString();
     const finalShopName = (shopName || '').trim() || 'Ma Boutique';
     const hashedPin = hashPin(cleanPin);
-
-    // Insert into SQLite with hashed PIN
-    db.prepare(`
-      INSERT INTO users (id, phone, full_name, shop_name, pin, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(newUserId, cleanPhone, trimmedName, finalShopName, hashedPin, now, now);
-
-    // Sync to Supabase if configured
-    if (isSupabaseConfigured()) {
-      try {
-        const supabase = getSupabaseClient();
-        if (supabase) {
-          await supabase.from('users').upsert({
-            id: newUserId,
-            phone: cleanPhone,
-            name: trimmedName,
-            store_name: finalShopName,
-            created_at: now,
-            updated_at: now,
-          });
-        }
-      } catch (sbErr: any) {
-        console.warn('[Supabase] Warning syncing new user to Supabase:', sbErr?.message);
-      }
-    }
-
-    const token = generateAuthToken({
-      id: newUserId,
-      phone: cleanPhone,
-      fullName: trimmedName,
-      shopName: finalShopName,
-    });
-
-    res.status(201).json({
-      token,
-      user: {
-        id: newUserId,
-        phone: cleanPhone,
-        fullName: trimmedName,
-        shopName: finalShopName,
-      },
-    });
+    const { error: insertError } = await supabase.from('users').insert({ id: newUserId, phone: cleanPhone, name: trimmedName, store_name: finalShopName, pin: hashedPin, created_at: now, updated_at: now });
+    if (insertError) throw insertError;
+    await ensureSupabaseAuthUser(cleanPhone, cleanPin, { id: newUserId, fullName: trimmedName, shopName: finalShopName });
+    const session = await signInWithSupabase(cleanPhone, cleanPin);
+    if (!session) throw new Error('Connexion Supabase Auth impossible après inscription.');
+    res.status(201).json({ token: session.accessToken, user: { id: newUserId, phone: cleanPhone, fullName: trimmedName, shopName: finalShopName } });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Erreur lors de l’inscription.' });
   }
@@ -229,7 +170,7 @@ apiRouter.get('/auth/me', (req: AuthenticatedRequest, res: Response) => {
  * POST /api/auth/change-pin
  * Changes the current authenticated user PIN
  */
-apiRouter.post('/auth/change-pin', (req: AuthenticatedRequest, res: Response) => {
+apiRouter.post('/auth/change-pin', async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { oldPin, newPin } = req.body;
 
@@ -242,18 +183,15 @@ apiRouter.post('/auth/change-pin', (req: AuthenticatedRequest, res: Response) =>
       return res.status(400).json({ error: 'Le nouveau code PIN doit comporter au moins 4 chiffres.' });
     }
 
-    const user = db.prepare('SELECT pin FROM users WHERE id = ?').get(req.userId!) as any;
-    if (!user || !verifyPin(String(oldPin).trim(), user.pin)) {
-      return res.status(401).json({ error: 'Ancien code PIN incorrect.' });
-    }
-
+    const supabase = getSupabaseClient();
+    if (!supabase) return res.status(503).json({ error: 'Supabase indisponible.', code: 'SUPABASE_REQUIRED' });
+    const { data: user, error: userError } = await supabase.from('users').select('pin, phone, name, store_name').eq('id', req.userId!).maybeSingle();
+    if (userError) throw userError;
+    if (!user || !verifyPin(String(oldPin).trim(), user.pin)) return res.status(401).json({ error: 'Ancien code PIN incorrect.' });
     const hashedNewPin = hashPin(cleanNewPin);
-    db.prepare('UPDATE users SET pin = ?, updated_at = ? WHERE id = ?').run(
-      hashedNewPin,
-      new Date().toISOString(),
-      req.userId!
-    );
-
+    const { error: updateError } = await supabase.from('users').update({ pin: hashedNewPin, updated_at: new Date().toISOString() }).eq('id', req.userId!);
+    if (updateError) throw updateError;
+    await ensureSupabaseAuthUser(user.phone, cleanNewPin, { id: req.userId!, fullName: user.name, shopName: user.store_name });
     res.json({ success: true, message: 'Code PIN modifié avec succès.' });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -267,10 +205,11 @@ apiRouter.post('/auth/change-pin', (req: AuthenticatedRequest, res: Response) =>
 apiRouter.patch('/auth/profile', async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { fullName, shopName, phone } = req.body;
-    const currentUser = db.prepare('SELECT * FROM users WHERE id = ?').get(req.userId!) as any;
-    if (!currentUser) {
-      return res.status(404).json({ error: 'Utilisateur introuvable.' });
-    }
+    const supabase = getSupabaseClient();
+    if (!supabase) return res.status(503).json({ error: 'Supabase indisponible.', code: 'SUPABASE_REQUIRED' });
+    const { data: currentUser, error: currentUserError } = await supabase.from('users').select('*').eq('id', req.userId!).maybeSingle();
+    if (currentUserError) throw currentUserError;
+    if (!currentUser) return res.status(404).json({ error: 'Utilisateur introuvable.' });
 
     let finalPhone = currentUser.phone;
     if (phone) {
@@ -279,43 +218,28 @@ apiRouter.patch('/auth/profile', async (req: AuthenticatedRequest, res: Response
         return res.status(400).json({ error: 'Numéro de téléphone invalide (au moins 8 chiffres).' });
       }
       // Check phone uniqueness
-      const existing = db.prepare('SELECT id FROM users WHERE phone = ? AND id != ?').get(cleanPhone, req.userId!);
+      const { data: existing } = await supabase.from('users').select('id').eq('phone', cleanPhone).neq('id', req.userId!).maybeSingle();
       if (existing) {
         return res.status(409).json({ error: 'Ce numéro de téléphone est déjà utilisé par un autre compte.' });
       }
       finalPhone = cleanPhone;
     }
 
-    const finalFullName = fullName !== undefined ? String(fullName).trim() : currentUser.full_name;
-    const finalShopName = shopName !== undefined ? String(shopName).trim() : currentUser.shop_name;
+    const finalFullName = fullName !== undefined ? String(fullName).trim() : currentUser.name;
+    const finalShopName = shopName !== undefined ? String(shopName).trim() : currentUser.store_name;
 
     if (!finalFullName) {
       return res.status(400).json({ error: 'Le nom complet est obligatoire.' });
     }
 
     const now = new Date().toISOString();
-    db.prepare(`
-      UPDATE users 
-      SET full_name = ?, shop_name = ?, phone = ?, updated_at = ?
-      WHERE id = ?
-    `).run(finalFullName, finalShopName || 'Ma Boutique', finalPhone, now, req.userId!);
-
-    // Sync to Supabase if active
-    if (isSupabaseConfigured()) {
-      try {
-        const supabase = getSupabaseClient();
-        if (supabase) {
-          await supabase.from('users').update({
-            name: finalFullName,
-            store_name: finalShopName || 'Ma Boutique',
-            phone: finalPhone,
-            updated_at: now,
-          }).eq('id', req.userId!);
-        }
-      } catch (sbErr: any) {
-        console.warn('[Supabase] Warning updating user in Supabase:', sbErr?.message);
-      }
-    }
+    const { error: updateError } = await supabase.from('users').update({
+      name: finalFullName,
+      store_name: finalShopName || 'Ma Boutique',
+      phone: finalPhone,
+      updated_at: now,
+    }).eq('id', req.userId!);
+    if (updateError) throw updateError;
 
     const updatedUser = {
       id: req.userId!,

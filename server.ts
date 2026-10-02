@@ -13,9 +13,11 @@ async function startServer() {
     }
   }
 
-  // Initialize database tables & seed data for Cheikh
-  initializeDatabase();
-  seedCheikhInitialData();
+  // SQLite remains available only for local development and tests.
+  if (process.env.NODE_ENV !== 'production') {
+    initializeDatabase();
+    seedCheikhInitialData();
+  }
 
   const app = express();
   const PORT = 3000;

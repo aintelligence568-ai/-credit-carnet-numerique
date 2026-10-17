@@ -3,7 +3,7 @@ import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { initializeDatabase, seedCheikhInitialData } from './server/db';
-import { apiRouter } from './server/routes/api';
+import { apiRouter, handleBictorysWebhook } from './server/routes/api';
 
 async function startServer() {
   if (process.env.NODE_ENV === 'production') {
@@ -22,6 +22,8 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
+  // Bictorys requires the raw request body for HMAC verification.
+  app.post('/api/webhooks/bictorys', express.raw({ type: 'application/json' }), handleBictorysWebhook);
   app.use(express.json());
 
   // Mount API routes first

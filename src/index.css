@@ -1,5 +1,13 @@
 @import "tailwindcss";
 
+:root {
+  color-scheme: light;
+  --brand-deep: #065f46;
+  --brand-primary: #047857;
+  --brand-soft: #ecfdf5;
+  --surface-page: #f7faf8;
+}
+
 html,
 body {
   height: 100%;

@@ -153,6 +153,77 @@ apiRouter.post('/api/auth/quick-demo', async (_req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+const bictorysConfig = () => ({
+  apiUrl: process.env.BICTORYS_API_URL || 'https://api.test.bictorys.com',
+  apiKey: process.env.BICTORYS_API_KEY,
+  webhookSecret: process.env.BICTORYS_WEBHOOK_SECRET,
+});
+
+apiRouter.post('/billing/bictorys/checkout', async (req, res) => {
+  try {
+    const { apiUrl, apiKey } = bictorysConfig();
+    if (!apiKey) return res.status(503).json({ error: 'Paiement temporairement indisponible.', code: 'BICTORYS_NOT_CONFIGURED' });
+    const { plan, customer } = req.body;
+    const amount = plan === 'annual' ? 25000 : 2500;
+    const paymentReference = `CARNET-${plan}-${crypto.randomUUID()}`;
+    const origin = `${req.protocol}://${req.get('host')}`;
+    const response = await fetch(`${apiUrl}/pay/v1/charges`, {
+      method: 'POST',
+      headers: { 'X-Api-Key': apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        amount,
+        currency: 'XOF',
+        country: 'SN',
+        paymentReference,
+        successRedirectUrl: `${origin}/?payment=success&ref=${paymentReference}`,
+        ErrorRedirectUrl: `${origin}/?payment=error&ref=${paymentReference}`,
+        customerObject: customer,
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) return res.status(response.status).json({ error: 'Bictorys a refusé la demande de paiement.', details: payload });
+    res.status(201).json({ ...payload, paymentReference, plan });
+  } catch (error: any) {
+    res.status(502).json({ error: 'Service de paiement momentanément indisponible.', code: 'BICTORYS_REQUEST_FAILED' });
+  }
+});
+
+apiRouter.get('/billing/bictorys/status/:transactionId', async (req, res) => {
+  try {
+    const { apiUrl, apiKey } = bictorysConfig();
+    if (!apiKey) return res.status(503).json({ error: 'Paiement temporairement indisponible.', code: 'BICTORYS_NOT_CONFIGURED' });
+    const response = await fetch(`${apiUrl}/pay/v1/transactions/${encodeURIComponent(req.params.transactionId)}/status`, { headers: { 'X-Api-Key': apiKey } });
+    const payload = await response.json().catch(() => ({}));
+    res.status(response.status).json(payload);
+  } catch {
+    res.status(502).json({ error: 'Impossible de vérifier le statut du paiement.' });
+  }
+});
+
+export async function handleBictorysWebhook(req: any, res: Response) {
+  try {
+    const { webhookSecret } = bictorysConfig();
+    const rawBody = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : JSON.stringify(req.body || {});
+    const signature = req.headers['x-webhook-signature'] as string | undefined;
+    const timestamp = req.headers['x-webhook-timestamp'] as string | undefined;
+    const secretKey = req.headers['x-secret-key'] as string | undefined;
+    let valid = false;
+    if (webhookSecret && signature && timestamp) {
+      const ts = Number(timestamp);
+      const expected = crypto.createHmac('sha256', webhookSecret).update(`${timestamp}.${rawBody}`).digest('hex');
+      valid = Number.isFinite(ts) && Math.abs(Date.now() - ts) <= 5 * 60 * 1000 && signature.length === expected.length && crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
+    } else if (webhookSecret && secretKey && secretKey.length === webhookSecret.length) {
+      valid = crypto.timingSafeEqual(Buffer.from(secretKey), Buffer.from(webhookSecret));
+    }
+    if (!valid) return res.status(200).json({ received: true });
+    const payload = JSON.parse(rawBody);
+    console.log('[bictorys] webhook reçu', { id: payload.id, status: payload.status, paymentReference: payload.paymentReference });
+    return res.status(200).json({ received: true });
+  } catch {
+    return res.status(200).json({ received: true });
+  }
+}
+
 // Apply auth middleware to all subsequent API endpoints
 apiRouter.use(authenticateUser);
 

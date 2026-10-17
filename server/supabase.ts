@@ -15,13 +15,16 @@ function getEnvUrl(): string | undefined {
 function getEnvKey(): string | undefined {
   const raw =
     process.env.SUPABASE_SERVICE_ROLE_KEY ||
-    process.env.SUPABASE_ANON_KEY ||
-    process.env.SUPABASE_PUBLISHABLE_KEY ||
-    process.env.SUPABASE_KEY ||
-    process.env.SUPABASE_API_KEY ||
-    process.env.VITE_SUPABASE_ANON_KEY ||
-    process.env.VITE_SUPABASE_KEY;
-  return raw ? raw.trim().replace(/^["']|["']$/g, '') : undefined;
+    process.env.SUPABASE_SECRET_KEY ||
+    (process.env.NODE_ENV === 'production'
+      ? undefined
+      : process.env.SUPABASE_ANON_KEY ||
+        process.env.SUPABASE_PUBLISHABLE_KEY ||
+        process.env.SUPABASE_KEY ||
+        process.env.SUPABASE_API_KEY ||
+        process.env.VITE_SUPABASE_ANON_KEY ||
+        process.env.VITE_SUPABASE_KEY);
+  return raw ? raw.trim().replace(/^['"]|['"]$/g, '') : undefined;
 }
 
 /**

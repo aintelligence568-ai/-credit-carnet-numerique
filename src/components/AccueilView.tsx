@@ -35,13 +35,13 @@ export const AccueilView: React.FC<AccueilViewProps> = ({
   const { t, language, isRTL } = useLanguage();
 
   return (
-    <div id="view-accueil" className="space-y-4 pb-6">
+    <div id="view-accueil" className="space-y-5 pb-6">
       {/* 4 Cockpit KPI Cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3.5">
         {/* KPI 1: Total donné à crédit ce mois-ci */}
         <div
           id="kpi-credited-month"
-          className="bg-white rounded-xl p-3 border border-slate-200 shadow-xs flex flex-col justify-between"
+          className="bg-white rounded-xl p-3.5 border border-slate-200 shadow-sm flex flex-col justify-between"
         >
           <div className="flex items-center justify-between text-slate-500 mb-1">
             <span className="text-[11px] font-medium leading-tight">{t.kpi_credited_month}</span>
@@ -60,7 +60,7 @@ export const AccueilView: React.FC<AccueilViewProps> = ({
         {/* KPI 2: Total récupéré ce mois-ci */}
         <div
           id="kpi-recovered-month"
-          className="bg-white rounded-xl p-3 border border-slate-200 shadow-xs flex flex-col justify-between"
+          className="bg-white rounded-xl p-3.5 border border-slate-200 shadow-sm flex flex-col justify-between"
         >
           <div className="flex items-center justify-between text-slate-500 mb-1">
             <span className="text-[11px] font-medium leading-tight">{t.kpi_recovered_month}</span>
@@ -79,11 +79,11 @@ export const AccueilView: React.FC<AccueilViewProps> = ({
         {/* KPI 3: Total restant à récupérer */}
         <div
           id="kpi-total-remaining"
-          className="bg-emerald-900 text-white rounded-xl p-3 border border-emerald-800 shadow-xs flex flex-col justify-between"
+          className="bg-slate-950 text-white rounded-xl p-3.5 border border-slate-800 shadow-sm flex flex-col justify-between"
         >
           <div className="flex items-center justify-between text-emerald-200 mb-1">
             <span className="text-[11px] font-medium leading-tight">{t.kpi_remaining_total}</span>
-            <div className="w-6 h-6 rounded-md bg-emerald-800 text-emerald-300 flex items-center justify-center shrink-0">
+            <div className="w-6 h-6 rounded-md bg-slate-900 text-teal-300 flex items-center justify-center shrink-0">
               <Wallet className="w-3.5 h-3.5" />
             </div>
           </div>
@@ -137,7 +137,7 @@ export const AccueilView: React.FC<AccueilViewProps> = ({
         <button
           id="accueil-btn-add-credit"
           onClick={() => onOpenNewCredit()}
-          className="flex-1 flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white py-3 px-4 rounded-xl font-bold text-sm shadow-xs transition"
+          className="flex-1 flex items-center justify-center gap-2 bg-teal-700 hover:bg-teal-800 active:bg-teal-900 text-white py-3 px-4 rounded-xl font-bold text-sm shadow-xs transition"
         >
           <PlusCircle className="w-4 h-4 shrink-0" />
           <span>{t.quick_action_new_credit_title}</span>

@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import crypto from 'node:crypto';
 import { CreditService } from '../services/creditService';
 import { SupabaseService } from '../services/supabaseService';
-import { AuthenticatedRequest, authenticateUser, generateAuthToken, DEFAULT_USER_ID, verifyPin, hashPin } from '../auth';
+import { AuthenticatedRequest, authenticateUser, generateAuthToken, DEFAULT_USER_ID, verifyPin, hashPin, ensureSupabaseAuthUser, signInWithSupabase } from '../auth';
 import { db, normalizePhone, seedCheikhInitialData } from '../db';
 import { isSupabaseConfigured, getSupabaseConfigInfo, getSupabaseClient } from '../supabase';
 import fs from 'node:fs';
@@ -40,45 +40,25 @@ apiRouter.post('/auth/login', async (req, res) => {
       });
     }
 
-    // Lookup user in SQLite
-    const user = db.prepare(`
-      SELECT id, phone, full_name, shop_name, pin
-      FROM users
-      WHERE phone = ?
-    `).get(cleanPhone) as any;
-
-    if (!user) {
-      return res.status(401).json({
-        error: 'Aucun compte trouvé avec ce numéro de téléphone.',
-        code: 'USER_NOT_FOUND',
-      });
+    if (!isSupabaseConfigured()) {
+      return res.status(503).json({ error: 'Supabase Auth est obligatoire. Configuration indisponible.', code: 'SUPABASE_REQUIRED' });
     }
+    const supabase = getSupabaseClient();
+    if (!supabase) throw new Error('Supabase Auth est indisponible.');
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id, phone, name, store_name, pin')
+      .eq('phone', cleanPhone)
+      .maybeSingle();
+    if (userError) throw userError;
+    if (!user) return res.status(401).json({ error: 'Aucun compte trouvé avec ce numéro de téléphone.', code: 'USER_NOT_FOUND' });
 
-    // Compare PIN with timing attack protection & scrypt hash support
     const trimmedPin = String(pin).trim();
-    if (!verifyPin(trimmedPin, user.pin)) {
-      return res.status(401).json({
-        error: 'Code PIN incorrect. Veuillez réessayer.',
-        code: 'INVALID_PIN',
-      });
-    }
-
-    const token = generateAuthToken({
-      id: user.id,
-      phone: user.phone,
-      fullName: user.full_name,
-      shopName: user.shop_name,
-    });
-
-    res.json({
-      token,
-      user: {
-        id: user.id,
-        phone: user.phone,
-        fullName: user.full_name,
-        shopName: user.shop_name,
-      },
-    });
+    if (!verifyPin(trimmedPin, user.pin)) return res.status(401).json({ error: 'Code PIN incorrect. Veuillez réessayer.', code: 'INVALID_PIN' });
+    await ensureSupabaseAuthUser(user.phone, trimmedPin, { id: user.id, fullName: user.name, shopName: user.store_name });
+    const session = await signInWithSupabase(user.phone, trimmedPin);
+    if (!session) return res.status(401).json({ error: 'Connexion Supabase Auth impossible.', code: 'AUTH_FAILED' });
+    res.json({ token: session.accessToken, user: { id: user.id, phone: user.phone, fullName: user.name, shopName: user.store_name } });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Erreur lors de la connexion.' });
   }
@@ -116,61 +96,22 @@ apiRouter.post('/auth/register', async (req, res) => {
       });
     }
 
-    // Check uniqueness
-    const existing = db.prepare('SELECT id FROM users WHERE phone = ?').get(cleanPhone);
-    if (existing) {
-      return res.status(409).json({
-        error: 'Un compte avec ce numéro de téléphone existe déjà. Veuillez vous connecter.',
-        code: 'PHONE_EXISTS',
-      });
-    }
+    if (!isSupabaseConfigured()) return res.status(503).json({ error: 'Supabase Auth est obligatoire. Configuration indisponible.', code: 'SUPABASE_REQUIRED' });
+    const supabase = getSupabaseClient();
+    if (!supabase) throw new Error('Supabase indisponible.');
+    const { data: existing } = await supabase.from('users').select('id').eq('phone', cleanPhone).maybeSingle();
+    if (existing) return res.status(409).json({ error: 'Un compte avec ce numéro de téléphone existe déjà. Veuillez vous connecter.', code: 'PHONE_EXISTS' });
 
     const newUserId = `user-${crypto.randomUUID()}`;
     const now = new Date().toISOString();
     const finalShopName = (shopName || '').trim() || 'Ma Boutique';
     const hashedPin = hashPin(cleanPin);
-
-    // Insert into SQLite with hashed PIN
-    db.prepare(`
-      INSERT INTO users (id, phone, full_name, shop_name, pin, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(newUserId, cleanPhone, trimmedName, finalShopName, hashedPin, now, now);
-
-    // Sync to Supabase if configured
-    if (isSupabaseConfigured()) {
-      try {
-        const supabase = getSupabaseClient();
-        if (supabase) {
-          await supabase.from('users').upsert({
-            id: newUserId,
-            phone: cleanPhone,
-            name: trimmedName,
-            store_name: finalShopName,
-            created_at: now,
-            updated_at: now,
-          });
-        }
-      } catch (sbErr: any) {
-        console.warn('[Supabase] Warning syncing new user to Supabase:', sbErr?.message);
-      }
-    }
-
-    const token = generateAuthToken({
-      id: newUserId,
-      phone: cleanPhone,
-      fullName: trimmedName,
-      shopName: finalShopName,
-    });
-
-    res.status(201).json({
-      token,
-      user: {
-        id: newUserId,
-        phone: cleanPhone,
-        fullName: trimmedName,
-        shopName: finalShopName,
-      },
-    });
+    const { error: insertError } = await supabase.from('users').insert({ id: newUserId, phone: cleanPhone, name: trimmedName, store_name: finalShopName, pin: hashedPin, created_at: now, updated_at: now });
+    if (insertError) throw insertError;
+    await ensureSupabaseAuthUser(cleanPhone, cleanPin, { id: newUserId, fullName: trimmedName, shopName: finalShopName });
+    const session = await signInWithSupabase(cleanPhone, cleanPin);
+    if (!session) throw new Error('Connexion Supabase Auth impossible après inscription.');
+    res.status(201).json({ token: session.accessToken, user: { id: newUserId, phone: cleanPhone, fullName: trimmedName, shopName: finalShopName } });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Erreur lors de l’inscription.' });
   }
@@ -212,38 +153,76 @@ apiRouter.post('/api/auth/quick-demo', async (_req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-apiRouter.post('/auth/quick-demo', async (_req, res) => {
+const bictorysConfig = () => ({
+  apiUrl: process.env.BICTORYS_API_URL || 'https://api.test.bictorys.com',
+  apiKey: process.env.BICTORYS_API_KEY,
+  webhookSecret: process.env.BICTORYS_WEBHOOK_SECRET,
+});
+
+apiRouter.post('/billing/bictorys/checkout', async (req, res) => {
   try {
-    const user = db.prepare(`
-      SELECT id, phone, full_name, shop_name, pin
-      FROM users
-      WHERE id = ?
-    `).get(DEFAULT_USER_ID) as any;
-
-    if (!user) {
-      return res.status(404).json({ error: 'Compte de démonstration introuvable.' });
-    }
-
-    const token = generateAuthToken({
-      id: user.id,
-      phone: user.phone,
-      fullName: user.full_name,
-      shopName: user.shop_name,
+    const { apiUrl, apiKey } = bictorysConfig();
+    if (!apiKey) return res.status(503).json({ error: 'Paiement temporairement indisponible.', code: 'BICTORYS_NOT_CONFIGURED' });
+    const { plan, customer } = req.body;
+    const amount = plan === 'annual' ? 25000 : 2500;
+    const paymentReference = `CARNET-${plan}-${crypto.randomUUID()}`;
+    const origin = `${req.protocol}://${req.get('host')}`;
+    const response = await fetch(`${apiUrl}/pay/v1/charges`, {
+      method: 'POST',
+      headers: { 'X-Api-Key': apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        amount,
+        currency: 'XOF',
+        country: 'SN',
+        paymentReference,
+        successRedirectUrl: `${origin}/?payment=success&ref=${paymentReference}`,
+        ErrorRedirectUrl: `${origin}/?payment=error&ref=${paymentReference}`,
+        customerObject: customer,
+      }),
     });
-
-    res.json({
-      token,
-      user: {
-        id: user.id,
-        phone: user.phone,
-        fullName: user.full_name,
-        shopName: user.shop_name,
-      },
-    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) return res.status(response.status).json({ error: 'Bictorys a refusé la demande de paiement.', details: payload });
+    res.status(201).json({ ...payload, paymentReference, plan });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    res.status(502).json({ error: 'Service de paiement momentanément indisponible.', code: 'BICTORYS_REQUEST_FAILED' });
   }
 });
+
+apiRouter.get('/billing/bictorys/status/:transactionId', async (req, res) => {
+  try {
+    const { apiUrl, apiKey } = bictorysConfig();
+    if (!apiKey) return res.status(503).json({ error: 'Paiement temporairement indisponible.', code: 'BICTORYS_NOT_CONFIGURED' });
+    const response = await fetch(`${apiUrl}/pay/v1/transactions/${encodeURIComponent(req.params.transactionId)}/status`, { headers: { 'X-Api-Key': apiKey } });
+    const payload = await response.json().catch(() => ({}));
+    res.status(response.status).json(payload);
+  } catch {
+    res.status(502).json({ error: 'Impossible de vérifier le statut du paiement.' });
+  }
+});
+
+export async function handleBictorysWebhook(req: any, res: Response) {
+  try {
+    const { webhookSecret } = bictorysConfig();
+    const rawBody = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : JSON.stringify(req.body || {});
+    const signature = req.headers['x-webhook-signature'] as string | undefined;
+    const timestamp = req.headers['x-webhook-timestamp'] as string | undefined;
+    const secretKey = req.headers['x-secret-key'] as string | undefined;
+    let valid = false;
+    if (webhookSecret && signature && timestamp) {
+      const ts = Number(timestamp);
+      const expected = crypto.createHmac('sha256', webhookSecret).update(`${timestamp}.${rawBody}`).digest('hex');
+      valid = Number.isFinite(ts) && Math.abs(Date.now() - ts) <= 5 * 60 * 1000 && signature.length === expected.length && crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
+    } else if (webhookSecret && secretKey && secretKey.length === webhookSecret.length) {
+      valid = crypto.timingSafeEqual(Buffer.from(secretKey), Buffer.from(webhookSecret));
+    }
+    if (!valid) return res.status(200).json({ received: true });
+    const payload = JSON.parse(rawBody);
+    console.log('[bictorys] webhook reçu', { id: payload.id, status: payload.status, paymentReference: payload.paymentReference });
+    return res.status(200).json({ received: true });
+  } catch {
+    return res.status(200).json({ received: true });
+  }
+}
 
 // Apply auth middleware to all subsequent API endpoints
 apiRouter.use(authenticateUser);
@@ -262,7 +241,7 @@ apiRouter.get('/auth/me', (req: AuthenticatedRequest, res: Response) => {
  * POST /api/auth/change-pin
  * Changes the current authenticated user PIN
  */
-apiRouter.post('/auth/change-pin', (req: AuthenticatedRequest, res: Response) => {
+apiRouter.post('/auth/change-pin', async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { oldPin, newPin } = req.body;
 
@@ -275,18 +254,15 @@ apiRouter.post('/auth/change-pin', (req: AuthenticatedRequest, res: Response) =>
       return res.status(400).json({ error: 'Le nouveau code PIN doit comporter au moins 4 chiffres.' });
     }
 
-    const user = db.prepare('SELECT pin FROM users WHERE id = ?').get(req.userId!) as any;
-    if (!user || !verifyPin(String(oldPin).trim(), user.pin)) {
-      return res.status(401).json({ error: 'Ancien code PIN incorrect.' });
-    }
-
+    const supabase = getSupabaseClient();
+    if (!supabase) return res.status(503).json({ error: 'Supabase indisponible.', code: 'SUPABASE_REQUIRED' });
+    const { data: user, error: userError } = await supabase.from('users').select('pin, phone, name, store_name').eq('id', req.userId!).maybeSingle();
+    if (userError) throw userError;
+    if (!user || !verifyPin(String(oldPin).trim(), user.pin)) return res.status(401).json({ error: 'Ancien code PIN incorrect.' });
     const hashedNewPin = hashPin(cleanNewPin);
-    db.prepare('UPDATE users SET pin = ?, updated_at = ? WHERE id = ?').run(
-      hashedNewPin,
-      new Date().toISOString(),
-      req.userId!
-    );
-
+    const { error: updateError } = await supabase.from('users').update({ pin: hashedNewPin, updated_at: new Date().toISOString() }).eq('id', req.userId!);
+    if (updateError) throw updateError;
+    await ensureSupabaseAuthUser(user.phone, cleanNewPin, { id: req.userId!, fullName: user.name, shopName: user.store_name });
     res.json({ success: true, message: 'Code PIN modifié avec succès.' });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -300,10 +276,11 @@ apiRouter.post('/auth/change-pin', (req: AuthenticatedRequest, res: Response) =>
 apiRouter.patch('/auth/profile', async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { fullName, shopName, phone } = req.body;
-    const currentUser = db.prepare('SELECT * FROM users WHERE id = ?').get(req.userId!) as any;
-    if (!currentUser) {
-      return res.status(404).json({ error: 'Utilisateur introuvable.' });
-    }
+    const supabase = getSupabaseClient();
+    if (!supabase) return res.status(503).json({ error: 'Supabase indisponible.', code: 'SUPABASE_REQUIRED' });
+    const { data: currentUser, error: currentUserError } = await supabase.from('users').select('*').eq('id', req.userId!).maybeSingle();
+    if (currentUserError) throw currentUserError;
+    if (!currentUser) return res.status(404).json({ error: 'Utilisateur introuvable.' });
 
     let finalPhone = currentUser.phone;
     if (phone) {
@@ -312,43 +289,28 @@ apiRouter.patch('/auth/profile', async (req: AuthenticatedRequest, res: Response
         return res.status(400).json({ error: 'Numéro de téléphone invalide (au moins 8 chiffres).' });
       }
       // Check phone uniqueness
-      const existing = db.prepare('SELECT id FROM users WHERE phone = ? AND id != ?').get(cleanPhone, req.userId!);
+      const { data: existing } = await supabase.from('users').select('id').eq('phone', cleanPhone).neq('id', req.userId!).maybeSingle();
       if (existing) {
         return res.status(409).json({ error: 'Ce numéro de téléphone est déjà utilisé par un autre compte.' });
       }
       finalPhone = cleanPhone;
     }
 
-    const finalFullName = fullName !== undefined ? String(fullName).trim() : currentUser.full_name;
-    const finalShopName = shopName !== undefined ? String(shopName).trim() : currentUser.shop_name;
+    const finalFullName = fullName !== undefined ? String(fullName).trim() : currentUser.name;
+    const finalShopName = shopName !== undefined ? String(shopName).trim() : currentUser.store_name;
 
     if (!finalFullName) {
       return res.status(400).json({ error: 'Le nom complet est obligatoire.' });
     }
 
     const now = new Date().toISOString();
-    db.prepare(`
-      UPDATE users 
-      SET full_name = ?, shop_name = ?, phone = ?, updated_at = ?
-      WHERE id = ?
-    `).run(finalFullName, finalShopName || 'Ma Boutique', finalPhone, now, req.userId!);
-
-    // Sync to Supabase if active
-    if (isSupabaseConfigured()) {
-      try {
-        const supabase = getSupabaseClient();
-        if (supabase) {
-          await supabase.from('users').update({
-            name: finalFullName,
-            store_name: finalShopName || 'Ma Boutique',
-            phone: finalPhone,
-            updated_at: now,
-          }).eq('id', req.userId!);
-        }
-      } catch (sbErr: any) {
-        console.warn('[Supabase] Warning updating user in Supabase:', sbErr?.message);
-      }
-    }
+    const { error: updateError } = await supabase.from('users').update({
+      name: finalFullName,
+      store_name: finalShopName || 'Ma Boutique',
+      phone: finalPhone,
+      updated_at: now,
+    }).eq('id', req.userId!);
+    if (updateError) throw updateError;
 
     const updatedUser = {
       id: req.userId!,
@@ -421,7 +383,9 @@ function isTableMissingError(err: any): boolean {
  */
 apiRouter.get('/cockpit/stats', async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const stats = CreditService.getCockpitStats(req.userId!);
+    const stats = isSupabaseConfigured()
+      ? await SupabaseService.getCockpitStats(req.userId!)
+      : CreditService.getCockpitStats(req.userId!);
     res.json(stats);
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Erreur serveur.' });
@@ -435,7 +399,9 @@ apiRouter.get('/cockpit/stats', async (req: AuthenticatedRequest, res: Response)
 apiRouter.get('/clients', async (req: AuthenticatedRequest, res: Response) => {
   try {
     const search = req.query.q as string | undefined;
-    const clients = CreditService.listClients(req.userId!, search);
+    const clients = isSupabaseConfigured()
+      ? await SupabaseService.listClients(req.userId!, search)
+      : CreditService.listClients(req.userId!, search);
     res.json(clients);
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Erreur serveur.' });
@@ -448,7 +414,9 @@ apiRouter.get('/clients', async (req: AuthenticatedRequest, res: Response) => {
  */
 apiRouter.get('/clients/:id', async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const client = CreditService.getClientSummary(req.userId!, req.params.id);
+    const client = isSupabaseConfigured()
+      ? await SupabaseService.getClientSummary(req.userId!, req.params.id)
+      : CreditService.getClientSummary(req.userId!, req.params.id);
     if (!client) {
       return res.status(404).json({ error: 'Client introuvable.', code: 'NOT_FOUND' });
     }
@@ -464,7 +432,9 @@ apiRouter.get('/clients/:id', async (req: AuthenticatedRequest, res: Response) =
  */
 apiRouter.get('/clients/:id/credits', async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const credits = CreditService.getClientCredits(req.userId!, req.params.id);
+    const credits = isSupabaseConfigured()
+      ? await SupabaseService.getClientCredits(req.userId!, req.params.id)
+      : CreditService.getClientCredits(req.userId!, req.params.id);
     res.json(credits);
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Erreur serveur.' });
@@ -477,7 +447,9 @@ apiRouter.get('/clients/:id/credits', async (req: AuthenticatedRequest, res: Res
  */
 apiRouter.get('/clients/:id/payments', async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const payments = CreditService.getClientPayments(req.userId!, req.params.id);
+    const payments = isSupabaseConfigured()
+      ? await SupabaseService.getClientPayments(req.userId!, req.params.id)
+      : CreditService.getClientPayments(req.userId!, req.params.id);
     res.json(payments);
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Erreur serveur.' });
@@ -491,7 +463,9 @@ apiRouter.get('/clients/:id/payments', async (req: AuthenticatedRequest, res: Re
 apiRouter.post('/clients', async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { firstName, lastName, phone } = req.body;
-    const client = CreditService.createClient(req.userId!, firstName, lastName, phone);
+    const client = isSupabaseConfigured()
+      ? await SupabaseService.createClient(req.userId!, firstName, lastName, phone)
+      : CreditService.createClient(req.userId!, firstName, lastName, phone);
     res.status(201).json(client);
   } catch (error: any) {
     const status = error.code === 'PHONE_ALREADY_EXISTS' ? 409 : 400;
@@ -510,7 +484,9 @@ apiRouter.post('/clients', async (req: AuthenticatedRequest, res: Response) => {
 apiRouter.patch('/clients/:id', async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { firstName, lastName, phone } = req.body;
-    const client = CreditService.updateClient(req.userId!, req.params.id, { firstName, lastName, phone });
+    const client = isSupabaseConfigured()
+      ? await SupabaseService.updateClient(req.userId!, req.params.id, { firstName, lastName, phone })
+      : CreditService.updateClient(req.userId!, req.params.id, { firstName, lastName, phone });
     res.json(client);
   } catch (error: any) {
     const status = error.code === 'CLIENT_NOT_FOUND' ? 404 : error.code === 'PHONE_ALREADY_EXISTS' ? 409 : 400;
@@ -535,7 +511,9 @@ apiRouter.patch('/clients/:id/credit-status', async (req: AuthenticatedRequest, 
       });
     }
 
-    const updated = CreditService.updateClientCreditStatus(req.userId!, req.params.id, creditStatus);
+    const updated = isSupabaseConfigured()
+      ? await SupabaseService.setClientCreditStatus(req.userId!, req.params.id, creditStatus)
+      : CreditService.updateClientCreditStatus(req.userId!, req.params.id, creditStatus);
     res.json(updated);
   } catch (error: any) {
     const status = error.code === 'CLIENT_NOT_FOUND' ? 404 : 400;
@@ -550,9 +528,11 @@ apiRouter.patch('/clients/:id/credit-status', async (req: AuthenticatedRequest, 
  * DELETE /api/clients/:id
  * Soft delete client (strictly forbidden if client has active debt)
  */
-apiRouter.delete('/clients/:id', (req: AuthenticatedRequest, res: Response) => {
+apiRouter.delete('/clients/:id', async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const result = CreditService.deleteClient(req.userId!, req.params.id);
+    const result = isSupabaseConfigured()
+      ? await SupabaseService.deleteClient(req.userId!, req.params.id)
+      : CreditService.deleteClient(req.userId!, req.params.id);
     res.json(result);
   } catch (error: any) {
     const status = error.code === 'CANNOT_DELETE_ACTIVE_DEBT' ? 422 : 400;
@@ -579,16 +559,27 @@ apiRouter.post('/credits', async (req: AuthenticatedRequest, res: Response) => {
       });
     }
 
-    const result = CreditService.createCredit(
-      req.userId!,
-      clientId,
-      Number(amount),
-      dueDate,
-      entryMode === 'DETAILED' ? 'DETAILED' : 'EXPRESS',
-      description,
-      items,
-      Boolean(forceOverride)
-    );
+    const result = isSupabaseConfigured()
+      ? await SupabaseService.createCredit(
+          req.userId!,
+          clientId,
+          Number(amount),
+          dueDate,
+          entryMode === 'DETAILED' ? 'DETAILED' : 'EXPRESS',
+          description,
+          items,
+          Boolean(forceOverride)
+        )
+      : CreditService.createCredit(
+          req.userId!,
+          clientId,
+          Number(amount),
+          dueDate,
+          entryMode === 'DETAILED' ? 'DETAILED' : 'EXPRESS',
+          description,
+          items,
+          Boolean(forceOverride)
+        );
 
     res.status(201).json(result);
   } catch (error: any) {
@@ -614,7 +605,9 @@ apiRouter.post('/credits', async (req: AuthenticatedRequest, res: Response) => {
 apiRouter.patch('/credits/:id', async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { amount, dueDate, description } = req.body;
-    const result = CreditService.updateCredit(req.userId!, req.params.id, { amount, dueDate, description });
+    const result = isSupabaseConfigured()
+      ? await SupabaseService.updateCredit(req.userId!, req.params.id, { amount, dueDate, description })
+      : CreditService.updateCredit(req.userId!, req.params.id, { amount, dueDate, description });
     res.json(result);
   } catch (error: any) {
     const status = error.code === 'CREDIT_NOT_FOUND' ? 404 : error.code === 'CREDIT_LOWER_THAN_PAYMENTS' ? 422 : 400;
@@ -631,7 +624,9 @@ apiRouter.patch('/credits/:id', async (req: AuthenticatedRequest, res: Response)
  */
 apiRouter.delete('/credits/:id', async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const result = CreditService.deleteCredit(req.userId!, req.params.id);
+    const result = isSupabaseConfigured()
+      ? await SupabaseService.deleteCredit(req.userId!, req.params.id)
+      : CreditService.deleteCredit(req.userId!, req.params.id);
     res.json(result);
   } catch (error: any) {
     const status = error.code === 'CREDIT_NOT_FOUND' ? 404 : error.code === 'CANNOT_DELETE_CREDIT_PAYMENT_EXCEEDS' ? 422 : 400;
@@ -666,14 +661,16 @@ apiRouter.post('/payments', async (req: AuthenticatedRequest, res: Response) => 
     // Use caller-provided idempotency key or generate controlled key if omitted
     const idempotencyKey = rawKey ? String(rawKey).trim() : `auto-${crypto.randomUUID()}`;
 
-    const result = CreditService.createPayment(
-      req.userId!,
-      clientId,
-      Number(amount),
-      notes,
-      creditId || null,
-      idempotencyKey
-    );
+    const result = isSupabaseConfigured()
+      ? await SupabaseService.createPayment(req.userId!, clientId, Number(amount), notes, creditId || null, idempotencyKey)
+      : CreditService.createPayment(
+          req.userId!,
+          clientId,
+          Number(amount),
+          notes,
+          creditId || null,
+          idempotencyKey
+        );
 
     if (result.isIdempotentReplay) {
       res.setHeader('X-Idempotent-Replay', 'true');
@@ -709,7 +706,9 @@ apiRouter.post('/payments', async (req: AuthenticatedRequest, res: Response) => 
 apiRouter.patch('/payments/:id', async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { amount, notes, paymentDate } = req.body;
-    const result = CreditService.updatePayment(req.userId!, req.params.id, { amount, notes, paymentDate });
+    const result = isSupabaseConfigured()
+      ? await SupabaseService.updatePayment(req.userId!, req.params.id, { amount, notes, paymentDate })
+      : CreditService.updatePayment(req.userId!, req.params.id, { amount, notes, paymentDate });
     res.json(result);
   } catch (error: any) {
     const status = error.code === 'PAYMENT_NOT_FOUND' ? 404 : error.code === 'PAYMENT_EXCEEDS_BALANCE' ? 422 : 400;
@@ -726,7 +725,9 @@ apiRouter.patch('/payments/:id', async (req: AuthenticatedRequest, res: Response
  */
 apiRouter.delete('/payments/:id', async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const result = CreditService.deletePayment(req.userId!, req.params.id);
+    const result = isSupabaseConfigured()
+      ? await SupabaseService.deletePayment(req.userId!, req.params.id)
+      : CreditService.deletePayment(req.userId!, req.params.id);
     res.json(result);
   } catch (error: any) {
     const status = error.code === 'PAYMENT_NOT_FOUND' ? 404 : 400;
@@ -743,6 +744,13 @@ apiRouter.delete('/payments/:id', async (req: AuthenticatedRequest, res: Respons
  */
 apiRouter.post('/test/reset', (req: AuthenticatedRequest, res: Response) => {
   try {
+    if (isSupabaseConfigured()) {
+      return res.status(409).json({
+        error: 'La réinitialisation de test est disponible uniquement avec le moteur SQLite local.',
+        code: 'SQLITE_TEST_ONLY',
+      });
+    }
+
     if (req.userId === DEFAULT_USER_ID) {
       seedCheikhInitialData(true);
       res.json({ message: 'Données de Cheikh réinitialisées avec succès aux 5 profils étalons.' });

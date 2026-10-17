@@ -1,6 +1,70 @@
 import { Request, Response, NextFunction } from 'express';
 import crypto from 'node:crypto';
-import { db } from './db';
+import { createClient } from '@supabase/supabase-js';
+import { getSupabaseClient, isSupabaseConfigured } from './supabase';
+
+function getSupabaseAuthClient() {
+  const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || !key) return null;
+  return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
+}
+
+function authEmail(phone: string): string {
+  return `${phone.replace(/\D/g, '')}@carnet.local`;
+}
+
+export async function ensureSupabaseAuthUser(phone: string, pin: string, profile: { id: string; fullName: string; shopName?: string }) {
+  const admin = getSupabaseClient();
+  if (!admin) throw new Error('Supabase est obligatoire pour l’authentification.');
+  const email = authEmail(phone);
+  const { data: listed, error: listError } = await admin.auth.admin.listUsers({ page: 1, perPage: 1000 });
+  if (listError) throw listError;
+  const existing = listed.users.find((candidate) => candidate.email === email);
+  if (!existing) {
+    const { error } = await admin.auth.admin.createUser({
+      email,
+      password: pin,
+      email_confirm: true,
+      user_metadata: { profile_id: profile.id, full_name: profile.fullName, shop_name: profile.shopName },
+    });
+    if (error) throw error;
+  } else {
+    const { error } = await admin.auth.admin.updateUserById(existing.id, { password: pin });
+    if (error) throw error;
+  }
+}
+
+export async function signInWithSupabase(phone: string, pin: string) {
+  const client = getSupabaseAuthClient();
+  if (!client) throw new Error('Supabase Auth n’est pas configuré.');
+  const { data, error } = await client.auth.signInWithPassword({ email: authEmail(phone), password: pin });
+  if (error || !data.session || !data.user) return null;
+  return { accessToken: data.session.access_token, authUserId: data.user.id };
+}
+
+export async function createSupabaseAuthUser(phone: string, pin: string, profile: { id: string; fullName: string; shopName?: string }) {
+  const client = getSupabaseAuthClient();
+  if (!client) throw new Error('Supabase Auth n’est pas configuré.');
+  const { data, error } = await client.auth.signUp({
+    email: authEmail(phone),
+    password: pin,
+    options: { data: { profile_id: profile.id, full_name: profile.fullName, shop_name: profile.shopName } },
+  });
+  if (error || !data.user) throw error || new Error('Création du compte Supabase Auth impossible.');
+  return data.session?.access_token || null;
+}
+
+export async function getSupabaseUserFromToken(token: string) {
+  const client = getSupabaseAuthClient();
+  if (!client) return null;
+  const { data, error } = await client.auth.getUser(token);
+  return error || !data.user ? null : data.user;
+}
+
+export function requireSupabaseAuth() {
+  if (!isSupabaseConfigured()) throw new Error('Supabase est obligatoire en production.');
+}
 
 export interface AuthenticatedRequest extends Request {
   userId?: string;
@@ -115,58 +179,40 @@ export function verifyAuthToken(token: string): { sub: string; phone: string } |
 /**
  * Middleware ensuring an authenticated user context is verified against DB
  */
-export function authenticateUser(req: AuthenticatedRequest, res: Response, next: NextFunction) {
-  let token = '';
+export async function authenticateUser(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.startsWith('Bearer ')
+      ? authHeader.slice(7).trim()
+      : String(req.headers['x-auth-token'] || '').trim();
 
-  const authHeader = req.headers.authorization;
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    token = authHeader.slice(7).trim();
-  } else if (req.headers['x-auth-token']) {
-    token = String(req.headers['x-auth-token']).trim();
-  }
-
-  let resolvedUserId = '';
-
-  if (token) {
-    const decoded = verifyAuthToken(token);
-    if (decoded?.sub) {
-      resolvedUserId = decoded.sub;
+    if (!token || !isSupabaseConfigured()) {
+      return res.status(401).json({ error: 'Session non authentifiée. Veuillez vous connecter.', code: 'UNAUTHORIZED' });
     }
+
+    const authUser = await getSupabaseUserFromToken(token);
+    if (!authUser?.email) {
+      return res.status(401).json({ error: 'Session Supabase invalide ou expirée.', code: 'UNAUTHORIZED' });
+    }
+
+    const phone = authUser.email.split('@')[0];
+    const supabase = getSupabaseClient();
+    if (!supabase) throw new Error('Supabase est obligatoire pour l’authentification.');
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('id, phone, name, store_name')
+      .eq('phone', phone)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!user) {
+      return res.status(401).json({ error: 'Profil utilisateur introuvable ou compte désactivé.', code: 'UNAUTHORIZED' });
+    }
+
+    req.userId = user.id;
+    req.user = { id: user.id, phone: user.phone, fullName: user.name, shopName: user.store_name };
+    next();
+  } catch (error: any) {
+    res.status(401).json({ error: error.message || 'Session non authentifiée.', code: 'UNAUTHORIZED' });
   }
-
-  // Support direct X-User-Id STRICTLY in test environment (NODE_ENV === 'test')
-  // In production (and standard runtime), X-User-Id is strictly forbidden and ignored to prevent spoofing
-  if (!resolvedUserId && process.env.NODE_ENV === 'test' && req.headers['x-user-id']) {
-    resolvedUserId = String(req.headers['x-user-id']).trim();
-  }
-
-  if (!resolvedUserId) {
-    return res.status(401).json({
-      error: 'Session non authentifiée. Veuillez vous connecter.',
-      code: 'UNAUTHORIZED',
-    });
-  }
-
-  const user = db.prepare(`
-    SELECT id, phone, full_name, shop_name 
-    FROM users 
-    WHERE id = ?
-  `).get(resolvedUserId) as any;
-
-  if (!user) {
-    return res.status(401).json({
-      error: 'Utilisateur introuvable ou compte désactivé.',
-      code: 'UNAUTHORIZED',
-    });
-  }
-
-  req.userId = user.id;
-  req.user = {
-    id: user.id,
-    phone: user.phone,
-    fullName: user.full_name,
-    shopName: user.shop_name,
-  };
-
-  next();
 }

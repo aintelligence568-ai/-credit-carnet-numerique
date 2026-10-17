@@ -19,10 +19,12 @@ import { ReminderModal } from './components/ReminderModal';
 import { NewClientModal } from './components/NewClientModal';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { AuthScreen } from './components/AuthScreen';
+import { LandingPage } from './components/LandingPage';
 import { ClientSummary } from './types';
 
 function MainApp() {
   const { isAuthenticated, isLoading: isAuthLoading } = useAuth();
+  const [showAuth, setShowAuth] = useState(false);
   const { cockpitStats } = useCredit();
   const { dir } = useLanguage();
 
@@ -57,7 +59,7 @@ function MainApp() {
   };
 
   return (
-    <div className="h-full h-[100dvh] w-full bg-slate-100 sm:bg-slate-200/80 sm:p-3 md:p-6 flex items-center justify-center font-sans antialiased overflow-hidden selection:bg-emerald-500 selection:text-white">
+    <div className="h-full h-[100dvh] w-full bg-slate-100 sm:bg-slate-200/80 sm:p-3 md:p-6 flex items-center justify-center font-sans antialiased overflow-hidden selection:bg-teal-600 selection:text-white">
       {/* Responsive App Container */}
       <div
         dir={dir}
@@ -73,8 +75,8 @@ function MainApp() {
             <p className="text-xs text-slate-500 font-medium">Chargement du carnet de crédit...</p>
           </div>
         ) : !isAuthenticated ? (
-          /* Authentication Screen */
-          <AuthScreen />
+          /* Public commercial entry point */
+          showAuth ? <AuthScreen /> : <LandingPage onStart={() => setShowAuth(true)} />
         ) : (
           /* Main Authenticated Application */
           <>

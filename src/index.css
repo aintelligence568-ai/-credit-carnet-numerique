@@ -1,5 +1,13 @@
 @import "tailwindcss";
 
+:root {
+  color-scheme: light;
+  --brand-deep: #065f46;
+  --brand-primary: #047857;
+  --brand-soft: #ecfdf5;
+  --surface-page: #f7faf8;
+}
+
 html,
 body {
   height: 100%;
@@ -20,7 +28,7 @@ body {
 /* Custom smooth scrollbar */
 .custom-scrollbar {
   scrollbar-width: thin;
-  scrollbar-color: #cbd5e1 transparent;
+  scrollbar-color: #94a3b8 transparent;
   -webkit-overflow-scrolling: touch;
 }
 
